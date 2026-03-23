@@ -89,6 +89,14 @@ async function connectWhatsApp() {
             console.log('✅ AgriHub WhatsApp Bot terhubung!');
         }
     });
+    // Sambutan saat bot dimasukkan ke grup
+    waSocket.ev.on('group-participants.update', async (update) => {
+        const botId = waSocket?.user?.id?.split(':')[0] || '';
+        if (update.action === 'add' && update.participants.some(p => p.id && p.id.startsWith(botId))) {
+            console.log(`👋 Bot ditambahkan ke grup: ${update.id}`);
+            await sendWAMessage(update.id, '🌾 *Halo semuanya! Saya AsistenTani AgriHub.*\n\nSaya siap membantu di grup ini! Tag saya atau ketik *MENU* untuk melihat perintah yang tersedia. Selamat bertani! 🚜🌿');
+        }
+    });
     waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
         if (type !== 'notify')
             return;
@@ -317,9 +325,11 @@ async function handleMessage(msg) {
             return;
         }
         // ── AI Chat (jika bukan command) ───────────────────────────────────────
-        // Deteksi mention di grup
+        // Deteksi mention di grup via contextInfo
         const botId = waSocket?.user?.id?.split(':')[0] || '';
-        const isMentioned = text.includes(`@${botId}`);
+        const botJid = waSocket?.user?.id?.split(':')[0] + '@s.whatsapp.net';
+        const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+        const isMentioned = text.includes(`@${botId}`) || mentionedJids.includes(botJid);
         if (isGroup) {
             if (!isMentioned)
                 return; // Hiraukan chat grup biasa jika tidak di-tag
@@ -333,8 +343,10 @@ async function handleMessage(msg) {
         // Cari user ID berdasarkan nomor pengirim
         const userPhone = sender.split('@')[0].replace(/[^0-9]/g, '');
         const user = await (0, knex_1.default)('users').where('phone', 'like', `%${userPhone.slice(-9)}%`).first();
+        // Hapus mention dari text sebelum dikirim ke AI
+        const promptText = text.replace(`@${botId}`, '').trim();
         const aiReply = await (0, aiService_1.chatWithAI)({
-            message: text.replace(`@${botId}`, '').trim(),
+            message: promptText || 'Halo!',
             history: [],
             userId: user ? user.id : 'wa-bot',
             useRag: true,
