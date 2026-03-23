@@ -475,14 +475,20 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
        } else {
          // Private Chat: Check user sendiri (user sudah di-resolve di atas)
          if (!user) {
-           const senderPhone = sender.split('@')[0].replace(/[^0-9]/g, '');
-           // Cek apakah nomor ini sudah ada di DB (tapi LID belum tertaut)
-           const exists = await db('users').where('phone', 'like', `%${senderPhone.slice(-9)}%`).first();
+           const isRealPhone = sender.endsWith('@s.whatsapp.net');
+           const decodedPhone = isRealPhone ? sender.split('@')[0].replace(/[^0-9]/g, '') : '';
+           const phoneParam = decodedPhone ? `&phone=${decodedPhone}` : '';
+           
+           // Cek apakah ada user dengan "nomor bayangan" dari LID ini atau nomor aslinya
+           let exists = null;
+           if (decodedPhone) {
+              exists = await db('users').where('phone', 'like', `%${decodedPhone.slice(-9)}%`).first();
+           }
            
            if (exists) {
-              await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk login dan menautkan akun secara otomatis:\n👉 https://agrihub.rumah-genbi.com/login?mode=login&phone=${senderPhone}&action=link&lid=${sender}`);
+              await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk login dan menautkan akun secara otomatis:\n👉 https://agrihub.rumah-genbi.com/login?mode=login${phoneParam}&action=link&lid=${sender}`);
            } else {
-              await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (Nomor HP & ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.rumah-genbi.com/login?mode=register&phone=${senderPhone}&action=link&lid=${sender}`);
+              await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
            }
            return;
          }
