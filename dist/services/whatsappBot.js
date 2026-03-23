@@ -170,8 +170,11 @@ async function connectWhatsApp() {
             console.log(`👋 Bot ditambahkan ke grup: ${update.id} oleh ${update.author}`);
             // Track siapa yang add (untuk usage tracking/owner grup)
             if (update.author) {
-                const adderPhone = update.author.split('@')[0].replace(/[^0-9]/g, '');
-                const user = await (0, knex_1.default)('users').where('phone', 'like', `%${adderPhone.slice(-9)}%`).first();
+                // Cari user berdasarkan JID (Phone) atau LID
+                const user = await (0, knex_1.default)('users')
+                    .where({ whatsapp_lid: update.author })
+                    .orWhere('phone', 'like', `%${update.author.split('@')[0].replace(/[^0-9]/g, '').slice(-9)}%`)
+                    .first();
                 const existing = await (0, knex_1.default)('group_credits').where({ group_jid: update.id }).first();
                 if (!existing) {
                     await (0, knex_1.default)('group_credits').insert({
@@ -292,6 +295,23 @@ async function handleMessage(msg) {
         (isGroup && text.toLowerCase().includes('bot'));
     if (isGroup) {
         console.log(`📩 [GROUP] From: ${sender} in ${jid} | Text: "${text}" | Clean: "${cleanText}" | Mention: ${isMentioned}`);
+    }
+    // ── RESOLUSI IDENTITY (Link Phone & LID) ───────────────────────────────
+    let user = null;
+    const isLid = sender.endsWith('@lid');
+    const participantJid = msg.key.participant || ''; // "628xxx@s.whatsapp.net" or "xxx@lid"
+    if (isLid) {
+        user = await (0, knex_1.default)('users').where({ whatsapp_lid: sender }).first();
+    }
+    else {
+        const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
+        user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+        // Jika kita ketemu via phone, tapi msg.key.participant (jika di grup) punya LID, link-kan!
+        const participantLid = participantJid.endsWith('@lid') ? participantJid : null;
+        if (user && participantLid && user.whatsapp_lid !== participantLid) {
+            await (0, knex_1.default)('users').where({ id: user.id }).update({ whatsapp_lid: participantLid });
+            console.log(`🔗 Linked LID ${participantLid} to user ${user.phone}`);
+        }
     }
     try {
         // ── Command Parser (Panggil dengan cleanUpper agar @Bot MENU tetap terbaca MENU) ──
@@ -428,9 +448,7 @@ async function handleMessage(msg) {
                 targetUserId = owner.id; // Semua aktivitas ditarik ke penanggung jawab
             }
             else {
-                // Private Chat: Check user sendiri
-                const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-                const user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+                // Private Chat: Check user sendiri (user sudah di-resolve di atas)
                 if (!user) {
                     await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di https://agrihub.id/daftar agar bisa menggunakan fitur AI.`);
                     return;
