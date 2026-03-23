@@ -53,7 +53,7 @@ router.get('/:id', async (req, res) => {
 /** POST /api/products — Buat produk baru (pemilik toko) */
 router.post('/', auth_1.requireAuth, async (req, res) => {
     try {
-        const { store_id, name, category, unit, price_per_unit, stock_quantity, min_order, description } = req.body;
+        const { store_id, name, category, unit, price_per_unit, stock_quantity, min_order, description, weight_gram, sku, origin, images_json } = req.body;
         if (!store_id || !name || !price_per_unit) {
             res.status(400).json({ success: false, error: 'store_id, name, price_per_unit wajib' });
             return;
@@ -66,7 +66,13 @@ router.post('/', auth_1.requireAuth, async (req, res) => {
         }
         const id = (0, uuid_1.v4)();
         const now = new Date().toISOString();
-        await (0, knex_1.default)('products').insert({ id, store_id, name, category, unit: unit || 'kg', price_per_unit, stock_quantity: stock_quantity || 0, min_order: min_order || 1, description, is_active: true, created_at: now, updated_at: now });
+        await (0, knex_1.default)('products').insert({
+            id, store_id, name, category, unit: unit || 'kg', price_per_unit,
+            stock_quantity: stock_quantity || 0, min_order: min_order || 1,
+            description, weight_gram: weight_gram || 1000, sku: sku || null,
+            origin: origin || null, images_json: images_json || null,
+            is_active: true, created_at: now, updated_at: now
+        });
         const product = await (0, knex_1.default)('products').where({ id }).first();
         res.status(201).json({ success: true, data: product });
     }

@@ -42,7 +42,7 @@ router.post('/', auth_1.requireAuth, async (req, res) => {
             res.status(409).json({ success: false, error: 'Anda sudah memiliki toko' });
             return;
         }
-        const { name, kabupaten, provinsi, product_types, description, latitude, longitude } = req.body;
+        const { name, kabupaten, provinsi, kecamatan, postal_code, address, product_types, description, latitude, longitude } = req.body;
         if (!name || !kabupaten || !provinsi) {
             res.status(400).json({ success: false, error: 'name, kabupaten, provinsi wajib' });
             return;
@@ -54,6 +54,9 @@ router.post('/', auth_1.requireAuth, async (req, res) => {
         await (0, knex_1.default)('stores').insert({
             id, owner_id: req.user.id, store_code: storeCode,
             name, kabupaten, provinsi,
+            kecamatan: kecamatan || null,
+            postal_code: postal_code || null,
+            address: address || null,
             latitude: latitude || null, longitude: longitude || null,
             product_types: JSON.stringify(product_types || []),
             description: description || null,
