@@ -141,5 +141,22 @@ router.patch('/link-whatsapp', auth_1.requireAuth, async (req, res) => {
         res.status(500).json({ success: false, error: 'Gagal tautkan WhatsApp' });
     }
 });
+/**
+ * GET /api/auth/check-phone/:phone
+ */
+router.get('/check-phone/:phone', async (req, res) => {
+    try {
+        const { phone } = req.params;
+        const user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+        res.json({
+            success: true,
+            exists: !!user,
+            name: user?.name // Kirim nama jika ada untuk menyapa
+        });
+    }
+    catch {
+        res.status(500).json({ success: false, error: 'Gagal cek nomor' });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=auth.js.map

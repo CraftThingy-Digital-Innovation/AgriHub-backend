@@ -145,4 +145,21 @@ router.patch('/link-whatsapp', requireAuth, async (req: AuthRequest, res: Respon
   }
 });
 
+/**
+ * GET /api/auth/check-phone/:phone
+ */
+router.get('/check-phone/:phone', async (req: Request, res: Response) => {
+  try {
+    const { phone } = req.params;
+    const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+    res.json({ 
+      success: true, 
+      exists: !!user,
+      name: user?.name // Kirim nama jika ada untuk menyapa
+    });
+  } catch {
+    res.status(500).json({ success: false, error: 'Gagal cek nomor' });
+  }
+});
+
 export default router;
