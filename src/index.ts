@@ -29,7 +29,7 @@ const PORT = process.env.PORT || 3000;
 // ── Security Middleware ──────────────────────────────────────────────────
 app.use(helmet({ 
   contentSecurityPolicy: false,
-  referrerPolicy: { policy: 'strict-origin-when-cross-origin' }
+  referrerPolicy: { policy: 'no-referrer-when-downgrade' }
 }));
 app.use(cors({
   origin: process.env.CLIENT_URL || 'http://localhost:5173',
