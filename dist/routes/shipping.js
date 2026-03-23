@@ -99,5 +99,20 @@ router.get('/track/:waybillId', auth_1.requireAuth, async (req, res) => {
         res.status(500).json({ success: false, error: err.message || 'Gagal tracking resi' });
     }
 });
+// ─── GET /api/shipping/search-area ───────────────────────────────────────
+router.get('/search-area', async (req, res) => {
+    try {
+        const { q } = req.query;
+        if (!q) {
+            res.status(400).json({ success: false, error: 'Query "q" wajib' });
+            return;
+        }
+        const areas = await (0, biteshipService_1.searchArea)(String(q));
+        res.json({ success: true, data: { areas } });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message || 'Gagal cari area' });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=shipping.js.map

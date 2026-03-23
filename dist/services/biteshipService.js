@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.checkOngkir = checkOngkir;
 exports.createShipment = createShipment;
 exports.trackShipment = trackShipment;
+exports.searchArea = searchArea;
 exports.getAvailableCouriers = getAvailableCouriers;
 const axios_1 = __importDefault(require("axios"));
 const BITESHIP_API = 'https://api.biteship.com/v1';
@@ -72,7 +73,11 @@ async function trackShipment(waybill_id, courier_code) {
         })),
     };
 }
-// ─── Get supported couriers ───────────────────────────────────────────────
+// ─── Search Area ID ───────────────────────────────────────────────────────
+async function searchArea(query) {
+    const response = await axios_1.default.get(`${BITESHIP_API}/maps/areas?countries=id&input=${encodeURIComponent(query)}&type=single`, { headers: getHeaders(), timeout: 10000 });
+    return response.data?.areas || [];
+}
 async function getAvailableCouriers() {
     return ['jne', 'sicepat', 'anteraja', 'tiki', 'pos', 'jnt', 'wahana', 'ninja'];
 }

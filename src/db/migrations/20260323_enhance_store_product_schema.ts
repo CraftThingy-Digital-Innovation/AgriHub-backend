@@ -6,6 +6,7 @@ export async function up(knex: Knex): Promise<void> {
     t.text('address').nullable();
     t.string('kecamatan').nullable();
     t.string('postal_code').nullable();
+    t.string('area_id').nullable(); // Biteship Area ID
   });
 
   // Update Products table
@@ -22,6 +23,7 @@ export async function down(knex: Knex): Promise<void> {
     t.dropColumn('address');
     t.dropColumn('kecamatan');
     t.dropColumn('postal_code');
+    t.dropColumn('area_id');
   });
 
   await knex.schema.table('products', (t) => {

@@ -23,7 +23,8 @@ import adminRouter from './routes/admin';
 import { connectWhatsApp, getWAStatus } from './services/whatsappBot';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+app.set('trust proxy', 1); // Diperlukan untuk express-rate-limit di balik proxy (Hostinger/Nginx)
+const PORT = process.env.PORT || 3000;
 
 // ── Security Middleware ──────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));

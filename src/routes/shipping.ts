@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/knex';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-import { checkOngkir, createShipment, trackShipment } from '../services/biteshipService';
+import { checkOngkir, createShipment, trackShipment, searchArea } from '../services/biteshipService';
 
 const router = Router();
 
@@ -95,6 +95,18 @@ router.get('/track/:waybillId', requireAuth, async (req: AuthRequest, res: Respo
     res.json({ success: true, data: tracking });
   } catch (err) {
     res.status(500).json({ success: false, error: (err as Error).message || 'Gagal tracking resi' });
+  }
+});
+
+// ─── GET /api/shipping/search-area ───────────────────────────────────────
+router.get('/search-area', async (req, res): Promise<void> => {
+  try {
+    const { q } = req.query;
+    if (!q) { res.status(400).json({ success: false, error: 'Query "q" wajib' }); return; }
+    const areas = await searchArea(String(q));
+    res.json({ success: true, data: { areas } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message || 'Gagal cari area' });
   }
 });
 

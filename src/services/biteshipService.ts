@@ -105,7 +105,15 @@ export async function trackShipment(waybill_id: string, courier_code: string): P
   };
 }
 
-// ─── Get supported couriers ───────────────────────────────────────────────
+// ─── Search Area ID ───────────────────────────────────────────────────────
+
+export async function searchArea(query: string): Promise<any[]> {
+  const response = await axios.get(
+    `${BITESHIP_API}/maps/areas?countries=id&input=${encodeURIComponent(query)}&type=single`,
+    { headers: getHeaders(), timeout: 10000 }
+  );
+  return response.data?.areas || [];
+}
 
 export async function getAvailableCouriers(): Promise<string[]> {
   return ['jne', 'sicepat', 'anteraja', 'tiki', 'pos', 'jnt', 'wahana', 'ninja'];

@@ -33,7 +33,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res: Response): Promise<v
       res.status(409).json({ success: false, error: 'Anda sudah memiliki toko' });
       return;
     }
-    const { name, kabupaten, provinsi, kecamatan, postal_code, address, product_types, description, latitude, longitude } = req.body;
+    const { name, kabupaten, provinsi, kecamatan, postal_code, address, area_id, product_types, description, latitude, longitude } = req.body;
     if (!name || !kabupaten || !provinsi) {
       res.status(400).json({ success: false, error: 'name, kabupaten, provinsi wajib' });
       return;
@@ -48,6 +48,7 @@ router.post('/', requireAuth, async (req: AuthRequest, res: Response): Promise<v
       kecamatan: kecamatan || null,
       postal_code: postal_code || null,
       address: address || null,
+      area_id: area_id || null,
       latitude: latitude || null, longitude: longitude || null,
       product_types: JSON.stringify(product_types || []),
       description: description || null,
