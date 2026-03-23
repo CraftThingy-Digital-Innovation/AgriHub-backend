@@ -27,7 +27,10 @@ app.set('trust proxy', 1); // Diperlukan untuk express-rate-limit di balik proxy
 const PORT = process.env.PORT || 3000;
 
 // ── Security Middleware ──────────────────────────────────────────────────
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({ 
+  contentSecurityPolicy: false,
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' }
+}));
 app.use(cors({
   origin: process.env.CLIENT_URL || 'http://localhost:5173',
   credentials: true,

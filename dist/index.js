@@ -28,7 +28,10 @@ const app = (0, express_1.default)();
 app.set('trust proxy', 1); // Diperlukan untuk express-rate-limit di balik proxy (Hostinger/Nginx)
 const PORT = process.env.PORT || 3000;
 // ── Security Middleware ──────────────────────────────────────────────────
-app.use((0, helmet_1.default)({ contentSecurityPolicy: false }));
+app.use((0, helmet_1.default)({
+    contentSecurityPolicy: false,
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' }
+}));
 app.use((0, cors_1.default)({
     origin: process.env.CLIENT_URL || 'http://localhost:5173',
     credentials: true,
