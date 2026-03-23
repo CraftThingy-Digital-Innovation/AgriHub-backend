@@ -85,9 +85,9 @@ router.get('/predict/:komoditasId', requireAuth, async (req: AuthRequest, res: R
     const komoditas = history[0].nama;
     const dataText = history.reverse().map((h: Record<string, unknown>) => `${h.recorded_date}: Rp${h.price_per_kg}/kg`).join('\n');
 
+    const prompt = `Analisis tren harga ${komoditas} berikut dan prediksi harga untuk 14 hari ke depan dalam format JSON array dengan field "date" (YYYY-MM-DD) dan "predicted_price" (angka dalam Rupiah):\n\n${dataText}\n\nBerikan hanya JSON array, tanpa penjelasan tambahan.`;
     const aiResult = await chatWithAI({
-      message: `Analisis tren harga ${komoditas} berikut dan prediksi harga untuk 14 hari ke depan dalam format JSON array dengan field "date" (YYYY-MM-DD) dan "predicted_price" (angka dalam Rupiah):\n\n${dataText}\n\nBerikan hanya JSON array, tanpa penjelasan tambahan.`,
-      history: [], userId: req.user!.id, useRag: false, apiKey: process.env.PUTER_API_KEY,
+      message: prompt, history: [], userId: req.user!.id, useRag: false,
     });
 
     let predictions: unknown[] = [];

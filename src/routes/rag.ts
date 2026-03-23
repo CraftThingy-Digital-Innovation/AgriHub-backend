@@ -127,13 +127,11 @@ router.post('/chat', requireAuth, async (req: AuthRequest, res: Response): Promi
   if (!message?.trim()) { res.status(400).json({ success: false, error: 'Pesan tidak boleh kosong' }); return; }
 
   try {
-    const apiKey = process.env.PUTER_API_KEY;
     const result = await chatWithAI({
       message,
       history,
       userId: req.user!.id,
       useRag: use_rag,
-      apiKey,
       model,
     });
     res.json({ success: true, data: result });
@@ -154,9 +152,8 @@ router.post('/chat/stream', requireAuth, async (req: AuthRequest, res: Response)
   res.flushHeaders();
 
   try {
-    const apiKey = process.env.PUTER_API_KEY;
     const result = await chatWithAI({
-      message, history, userId: req.user!.id, useRag: use_rag, apiKey,
+      message, history, userId: req.user!.id, useRag: use_rag,
     });
 
     // Simulate streaming by sending word by word

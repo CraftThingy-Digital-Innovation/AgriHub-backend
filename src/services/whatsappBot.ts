@@ -229,9 +229,13 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
       await deductGroupCredit(jid, 0.05);
     }
 
+    // Cari user ID berdasarkan nomor pengirim
+    const userPhone = sender.split('@')[0].replace(/[^0-9]/g, '');
+    const user = await db('users').where('phone', 'like', `%${userPhone.slice(-9)}%`).first();
+
     const aiReply = await chatWithAI({
-      message: text, history: [], userId: 'wa-bot',
-      useRag: true, apiKey: process.env.PUTER_API_KEY,
+      message: text, history: [], userId: user ? user.id : 'wa-bot',
+      useRag: true,
     });
 
     await sendWAMessage(jid, `🌱 ${aiReply.reply}${aiReply.ragSources.length > 0 ? `\n\n_📚 Sumber: ${aiReply.ragSources.join(', ')}_` : ''}`);

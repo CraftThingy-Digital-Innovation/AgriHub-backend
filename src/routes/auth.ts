@@ -107,4 +107,21 @@ router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<
   }
 });
 
+/**
+ * PATCH /api/auth/puter-token
+ * Simpan token OAuth Puter.js user
+ */
+router.patch('/puter-token', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { token } = req.body;
+    await db('users').where({ id: req.user!.id }).update({
+      puter_token: token,
+      updated_at: new Date().toISOString(),
+    });
+    res.json({ success: true, message: 'Puter Token berhasil disimpan' });
+  } catch {
+    res.status(500).json({ success: false, error: 'Gagal simpan token' });
+  }
+});
+
 export default router;

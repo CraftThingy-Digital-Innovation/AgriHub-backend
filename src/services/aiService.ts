@@ -43,10 +43,9 @@ export async function chatWithAI(opts: {
   history: ChatMessage[];
   userId: string;
   useRag?: boolean;
-  apiKey?: string;
   model?: string;
 }): Promise<{ reply: string; ragSources: string[]; tokensUsed?: number }> {
-  const { message, history, userId, useRag = true, apiKey, model = AI_MODELS.default } = opts;
+  const { message, history, userId, useRag = true, model = AI_MODELS.default } = opts;
 
   let ragContext = '';
   const ragSources: string[] = [];
@@ -71,18 +70,21 @@ export async function chatWithAI(opts: {
   ];
 
   try {
-    // Coba dengan Puter.js API dulu
-    if (apiKey) {
-      const response = await callPuterAI({ messages, model, apiKey });
-      return { reply: response.reply, ragSources, tokensUsed: response.tokensUsed };
-    } else {
-      // Fallback: simple keyword-based response untuk dev/testing
-      return { reply: generateFallbackReply(message), ragSources, tokensUsed: 0 };
+    // Ambil token puter user dari DB
+    const user = await db('users').where({ id: userId }).select('puter_token').first();
+    if (!user || !user.puter_token) {
+      if (userId === 'wa-bot') {
+        return { reply: '❌ Fitur AI dimatikan karena sistem menggunakan Bring Your Own Token. Harap login dan hubungkan akun Puter di web.', ragSources: [] };
+      }
+      return { reply: '❌ Anda belum menghubungkan akun Puter untuk fitur AI. Silakan hubungkan di Pengaturan Chat.', ragSources: [] };
     }
+
+    const response = await callPuterAI({ messages, model, apiKey: user.puter_token });
+    return { reply: response.reply, ragSources, tokensUsed: response.tokensUsed };
   } catch (err) {
     console.error('AI chat error:', err);
     return {
-      reply: 'Maaf, terjadi kesalahan saat menghubungi AI. Pastikan Puter API key sudah dikonfigurasi di file .env. ' + (err as Error).message,
+      reply: 'Maaf, terjadi kesalahan saat menghubungi AI Puter. Token Anda mungkin kadaluarsa. Silakan hubungkan ulang akun Puter Anda. ' + (err as Error).message,
       ragSources: [],
     };
   }

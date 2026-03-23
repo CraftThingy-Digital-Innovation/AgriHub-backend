@@ -14,6 +14,7 @@ export interface User {
   avatar_url?: string;
   is_verified: boolean;
   puter_user_id?: string;
+  puter_token?: string | null;
   created_at: string;
   updated_at: string;
 }
