@@ -14,6 +14,12 @@ import productsRouter from './routes/products';
 import storesRouter from './routes/stores';
 import ordersRouter from './routes/orders';
 import ragRouter from './routes/rag';
+import paymentRouter from './routes/payment';
+import walletRouter from './routes/wallet';
+import shippingRouter from './routes/shipping';
+import matchingRouter from './routes/matching';
+import priceRouter from './routes/price';
+import { connectWhatsApp, getWAStatus } from './services/whatsappBot';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -52,6 +58,14 @@ app.use('/api/products', productsRouter);
 app.use('/api/stores', storesRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/rag', ragRouter);
+app.use('/api/payment', paymentRouter);
+app.use('/api/wallet', walletRouter);
+app.use('/api/shipping', shippingRouter);
+app.use('/api/matching', matchingRouter);
+app.use('/api/price', priceRouter);
+
+// ── WhatsApp Bot Status ──────────────────────────────────────────────────
+app.get('/api/wa/status', (_req, res) => res.json({ success: true, data: getWAStatus() }));
 
 // ── Serve Vite Build (Production) ─────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
@@ -71,6 +85,12 @@ async function bootstrap() {
   try {
     // Auto-migrate sebelum start server
     await runMigrations();
+
+    // Start WhatsApp bot jika diaktifkan
+    if (process.env.ENABLE_WHATSAPP === 'true') {
+      connectWhatsApp().catch(err => console.error('WA Bot error:', err));
+    }
+
     app.listen(PORT, () => {
       console.log('');
       console.log('🌾 ─────────────────────────────────────────');
