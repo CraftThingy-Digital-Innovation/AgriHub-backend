@@ -104,39 +104,51 @@ async function connectWhatsApp() {
  * Alternatif untuk scan QR bagi kamera rusak
  */
 async function getWAPairingCode(phoneNumber) {
-    // Pastikan socket tidak sedang terhubung
-    if (isConnected) {
-        throw new Error('WhatsApp sudah terhubung. Logout dulu jika ingin ganti akun.');
-    }
-    // Jika ingin pairing baru, sebaiknya hapus session lama agar tidak konflik
-    try {
-        if (fs_1.default.existsSync(AUTH_DIR)) {
-            console.log('🧹 Menghapus session lama untuk pairing baru...');
-            // Tutup socket jika ada
-            if (waSocket) {
-                waSocket.ev.removeAllListeners('connection.update');
-                waSocket.end(undefined);
-                waSocket = null;
-            }
-            // Hapus isi folder wa-auth
-            const files = fs_1.default.readdirSync(AUTH_DIR);
-            for (const file of files) {
-                fs_1.default.unlinkSync(path_1.default.join(AUTH_DIR, file));
-            }
-        }
-    }
-    catch (err) {
-        console.error('⚠️ Gagal membersihkan session lama:', err);
-    }
-    // Mulai socket baru (pasti fresh karena AUTH_DIR kosong)
-    console.log('🔄 Memulai socket baru (fresh) untuk pairing code...');
-    await connectWhatsApp();
-    // Beri jeda agar socket benar-benar siap
-    await new Promise(resolve => setTimeout(resolve, 5000));
     // Bersihkan nomor (hanya angka)
     const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
     if (!cleanPhone)
         throw new Error('Nomor HP tidak valid');
+    // Jika sudah terhubung, cek apakah nomornya sama
+    if (isConnected && waSocket?.user?.id?.startsWith(cleanPhone)) {
+        throw new Error('WhatsApp sudah terhubung dengan nomor ini.');
+    }
+    // Jika ingin pairing baru (dengan nomor baru atau saat terputus), 
+    // baru kita bersihkan session lama.
+    try {
+        if (fs_1.default.existsSync(AUTH_DIR)) {
+            // Hanya hapus jika TIDAK sedang terhubung atau nomor berbeda
+            const currentAuth = JSON.parse(fs_1.default.readFileSync(path_1.default.join(AUTH_DIR, 'creds.json'), 'utf-8') || '{}');
+            const currentPhone = currentAuth.me?.id?.split(':')[0];
+            if (!isConnected || currentPhone !== cleanPhone) {
+                console.log('🧹 Menghapus session lama karena nomor berbeda atau status disconnect...');
+                if (waSocket) {
+                    waSocket.ev.removeAllListeners('connection.update');
+                    waSocket.end(undefined);
+                    waSocket = null;
+                }
+                const files = fs_1.default.readdirSync(AUTH_DIR);
+                for (const file of files) {
+                    try {
+                        fs_1.default.unlinkSync(path_1.default.join(AUTH_DIR, file));
+                    }
+                    catch { }
+                }
+            }
+            else if (isConnected) {
+                // Jika sudah konek dengan nomor yang sama, kembalikan sukses saja
+                return 'ALREADY_CONNECTED';
+            }
+        }
+    }
+    catch (err) {
+        console.error('⚠️ Gagal memvalidasi/membersihkan session lama:', err);
+    }
+    // Mulai socket baru jika belum ada atau baru saja dihapus
+    if (!waSocket) {
+        console.log('🔄 Memulai socket baru untuk pairing code...');
+        await connectWhatsApp();
+        await new Promise(resolve => setTimeout(resolve, 5000));
+    }
     console.log(`🔑 Meminta Pairing Code untuk: ${cleanPhone}`);
     try {
         const socket = waSocket;
