@@ -104,17 +104,35 @@ async function connectWhatsApp() {
  * Alternatif untuk scan QR bagi kamera rusak
  */
 async function getWAPairingCode(phoneNumber) {
-    // Pastikan socket ada dan tidak dalam status terhubung
+    // Pastikan socket tidak sedang terhubung
     if (isConnected) {
         throw new Error('WhatsApp sudah terhubung. Logout dulu jika ingin ganti akun.');
     }
-    // Jika socket belum ada, atau sedang error, buat baru
-    if (!waSocket) {
-        console.log('🔄 Memulai socket baru untuk pairing code...');
-        await connectWhatsApp();
-        // Beri jeda sebentar agar socket terinisialisasi
-        await new Promise(resolve => setTimeout(resolve, 2000));
+    // Jika ingin pairing baru, sebaiknya hapus session lama agar tidak konflik
+    try {
+        if (fs_1.default.existsSync(AUTH_DIR)) {
+            console.log('🧹 Menghapus session lama untuk pairing baru...');
+            // Tutup socket jika ada
+            if (waSocket) {
+                waSocket.ev.removeAllListeners('connection.update');
+                waSocket.end(undefined);
+                waSocket = null;
+            }
+            // Hapus isi folder wa-auth
+            const files = fs_1.default.readdirSync(AUTH_DIR);
+            for (const file of files) {
+                fs_1.default.unlinkSync(path_1.default.join(AUTH_DIR, file));
+            }
+        }
     }
+    catch (err) {
+        console.error('⚠️ Gagal membersihkan session lama:', err);
+    }
+    // Mulai socket baru (pasti fresh karena AUTH_DIR kosong)
+    console.log('🔄 Memulai socket baru (fresh) untuk pairing code...');
+    await connectWhatsApp();
+    // Beri jeda agar socket benar-benar siap
+    await new Promise(resolve => setTimeout(resolve, 5000));
     // Bersihkan nomor (hanya angka)
     const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
     if (!cleanPhone)
@@ -129,15 +147,7 @@ async function getWAPairingCode(phoneNumber) {
     }
     catch (err) {
         console.error('❌ Error saat meminta pairing code:', err);
-        // Jika gagal, coba sekali lagi dengan reset socket
-        console.log('🔄 Mencoba reset socket dan minta ulang...');
-        waSocket = null;
-        await connectWhatsApp();
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        const socketRetry = waSocket;
-        if (!socketRetry)
-            throw new Error('Gagal mereset socket WhatsApp');
-        return await socketRetry.requestPairingCode(cleanPhone);
+        throw new Error('Gagal meminta Pairing Code. Pastikan server stabil dan coba lagi.');
     }
 }
 function getWAStatus() {
