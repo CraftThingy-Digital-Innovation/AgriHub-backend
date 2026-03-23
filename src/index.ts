@@ -71,8 +71,8 @@ app.get('/api/wa/status', (_req, res) => res.json({ success: true, data: getWASt
 
 // ── Serve Vite Build (Production) ─────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
-  // Lokasi 'public' ada di folder yang sama dengan entry file di server
-  const distPath = path.resolve(__dirname, 'public');
+  // Gunakan process.cwd() agar konsisten mencari folder 'public' di root aplikasi
+  const distPath = path.resolve(process.cwd(), 'public');
   const fs = require('fs');
   
   if (fs.existsSync(distPath)) {
