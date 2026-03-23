@@ -480,14 +480,14 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
            const exists = await db('users').where('phone', 'like', `%${senderPhone.slice(-9)}%`).first();
            
            if (exists) {
-              await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk login dan menautkan akun secara otomatis:\n👉 https://agrihub.id/login?mode=login&phone=${senderPhone}&action=link&lid=${sender}`);
+              await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk login dan menautkan akun secara otomatis:\n👉 https://agrihub.rumah-genbi.com/login?mode=login&phone=${senderPhone}&action=link&lid=${sender}`);
            } else {
-              await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (Nomor HP & ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.id/login?mode=register&phone=${senderPhone}&action=link&lid=${sender}`);
+              await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (Nomor HP & ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.rumah-genbi.com/login?mode=register&phone=${senderPhone}&action=link&lid=${sender}`);
            }
            return;
          }
          if (!user.puter_token) {
-           await sendWAMessage(jid, `🔌 *Akun Anda belum terhubung ke Puter.com.*\n\nSilakan klik link ini untuk langsung menghubungkan:\n👉 https://agrihub.id/app?action=connect-puter`);
+           await sendWAMessage(jid, `🔌 *Akun Anda belum terhubung ke Puter.com.*\n\nSilakan klik link ini untuk langsung menghubungkan:\n👉 https://agrihub.rumah-genbi.com/app?action=connect-puter`);
            return;
          }
          targetUserId = user.id;
