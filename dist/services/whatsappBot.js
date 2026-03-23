@@ -398,20 +398,26 @@ async function handleMessage(msg) {
         if (isGroup && !isMentioned)
             return;
         if (!isCommand) {
-            const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-            const user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
-            // Cek apakah user sudah login & connect ke Puter.com
-            if (isMentioned) {
-                if (!user) {
-                    await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di https://agrihub.id/daftar agar bisa menggunakan fitur AI di grup ini.`);
-                    return;
-                }
-                if (!user.puter_token) {
-                    await sendWAMessage(jid, `🔌 *Akun Anda belum terhubung ke Puter.com.*\n\nSilakan buka Dashboard AgriHub dan hubungkan akun Anda untuk mulai bertanya.`);
-                    return;
-                }
-            }
+            // Cek siapa yang bertanggung jawab atas grup ini
+            let targetUserId = 'wa-bot';
             if (isGroup) {
+                const groupMeta = await (0, knex_1.default)('group_credits').where({ group_jid: jid }).first();
+                if (!groupMeta || !groupMeta.owner_id) {
+                    if (isMentioned)
+                        await sendWAMessage(jid, `⚠️ Grup ini belum memiliki penanggung jawab resmi. Silakan tambahkan ulang bot ke grup.`);
+                    return;
+                }
+                const owner = await (0, knex_1.default)('users').where({ id: groupMeta.owner_id }).first();
+                if (!owner) {
+                    if (isMentioned)
+                        await sendWAMessage(jid, `❌ Penanggung jawab grup ini tidak ditemukan di database.`);
+                    return;
+                }
+                if (!owner.puter_token) {
+                    if (isMentioned)
+                        await sendWAMessage(jid, `🔌 Penanggung jawab grup ini (@${owner.phone.split(':')[0]}) belum menghubungkan akun Puter.com.`);
+                    return;
+                }
                 const credit = await (0, aiService_2.checkGroupCredit)(jid);
                 if (!credit.allowed) {
                     if (isMentioned)
@@ -419,11 +425,26 @@ async function handleMessage(msg) {
                     return;
                 }
                 await (0, aiService_2.deductGroupCredit)(jid, 0.05);
+                targetUserId = owner.id; // Semua aktivitas ditarik ke penanggung jawab
+            }
+            else {
+                // Private Chat: Check user sendiri
+                const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
+                const user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+                if (!user) {
+                    await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di https://agrihub.id/daftar agar bisa menggunakan fitur AI.`);
+                    return;
+                }
+                if (!user.puter_token) {
+                    await sendWAMessage(jid, `🔌 *Akun Anda belum terhubung ke Puter.com.*\n\nSilakan buka Dashboard AgriHub dan hubungkan akun Anda.`);
+                    return;
+                }
+                targetUserId = user.id;
             }
             const aiReply = await (0, aiService_1.chatWithAI)({
                 message: cleanText || 'Halo!',
                 history: [],
-                userId: user ? user.id : 'wa-bot',
+                userId: targetUserId,
                 useRag: true
             });
             await sendWAMessage(jid, `🌱 ${aiReply.reply}`);
