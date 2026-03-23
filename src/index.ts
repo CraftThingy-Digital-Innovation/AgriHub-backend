@@ -19,6 +19,7 @@ import walletRouter from './routes/wallet';
 import shippingRouter from './routes/shipping';
 import matchingRouter from './routes/matching';
 import priceRouter from './routes/price';
+import adminRouter from './routes/admin';
 import { connectWhatsApp, getWAStatus } from './services/whatsappBot';
 
 const app = express();
@@ -63,6 +64,7 @@ app.use('/api/wallet', walletRouter);
 app.use('/api/shipping', shippingRouter);
 app.use('/api/matching', matchingRouter);
 app.use('/api/price', priceRouter);
+app.use('/api/admin', adminRouter);
 
 // ── WhatsApp Bot Status ──────────────────────────────────────────────────
 app.get('/api/wa/status', (_req, res) => res.json({ success: true, data: getWAStatus() }));
