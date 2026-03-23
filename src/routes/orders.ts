@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/knex';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-import { calculateFees, ESCROW_AUTO_RELEASE_DAYS } from '@agrihub/shared';
+import { calculateFees, ESCROW_AUTO_RELEASE_DAYS } from '../shared';
 
 const router = Router();
 

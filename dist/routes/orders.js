@@ -7,7 +7,7 @@ const express_1 = require("express");
 const uuid_1 = require("uuid");
 const knex_1 = __importDefault(require("../config/knex"));
 const auth_1 = require("../middleware/auth");
-const shared_1 = require("@agrihub/shared");
+const shared_1 = require("../shared");
 const router = (0, express_1.Router)();
 /** POST /api/orders — Buat pesanan baru */
 router.post('/', auth_1.requireAuth, async (req, res) => {
