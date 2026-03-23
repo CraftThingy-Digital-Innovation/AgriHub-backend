@@ -237,12 +237,25 @@ async function handleMessage(msg) {
         return;
     const upper = text.toUpperCase();
     const sender = msg.key.participant || msg.key.remoteJid || '';
-    const botId = waSocket?.user?.id?.split(':')[0] || '';
+    // ── DETEKSI MENTION YANG KUAT ──────────────────────────────────────────
+    const botId = waSocket?.user?.id?.split('@')[0].split(':')[0] || '';
     const botJid = botId + '@s.whatsapp.net';
-    const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    // Ambil contextInfo dari berbagai kemungkinan pesan
+    const contextInfo = msg.message?.extendedTextMessage?.contextInfo ||
+        msg.message?.imageMessage?.contextInfo ||
+        msg.message?.videoMessage?.contextInfo ||
+        msg.message?.audioMessage?.contextInfo ||
+        msg.message?.documentMessage?.contextInfo;
+    const mentionedJids = contextInfo?.mentionedJid || [];
+    // Deteksi mention: JID resmi, teks @nomor, atau teks @bot (nomor tanpa 62)
     const isMentioned = mentionedJids.includes(botJid) ||
         text.includes(`@${botId}`) ||
-        (isGroup && text.toLowerCase().includes('asistentani'));
+        text.includes(`@${botId.slice(2)}`) || // @851...
+        (isGroup && text.toLowerCase().includes('asistentani')) ||
+        (isGroup && text.toLowerCase().includes('bot'));
+    if (isGroup) {
+        console.log(`📩 [GROUP] Msg from ${sender} in ${jid}: "${text.slice(0, 50)}${text.length > 50 ? '...' : ''}" | Mentioned: ${isMentioned}`);
+    }
     try {
         // ── DAFTAR TOKO ──────────────────────────────────────────────
         if (upper.startsWith('DAFTAR TOKO')) {
