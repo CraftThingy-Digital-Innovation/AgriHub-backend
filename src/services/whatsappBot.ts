@@ -1,41 +1,118 @@
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState,
+  AuthenticationState,
   fetchLatestBaileysVersion,
   proto,
   WASocket,
+  AuthenticationCreds,
+  SignalDataTypeMap,
+  initAuthCreds,
+  BufferJSON,
 } from 'baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import qrcodeTerminal from 'qrcode-terminal';
-import path from 'path';
-import fs from 'fs';
 import db from '../config/knex';
 import { chatWithAI } from './aiService';
 import { checkGroupCredit, deductGroupCredit } from './aiService';
 import { checkOngkir } from './biteshipService';
 import { v4 as uuidv4 } from 'uuid';
 
-// ─── Auth state dir ───────────────────────────────────────────────────────
-const AUTH_DIR = path.resolve(process.cwd(), 'wa-auth');
-if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
-
+// ─── Constants ───────────────────────────────────────────────────────────
 let waSocket: WASocket | null = null;
 let isConnected = false;
 let qrCode = '';
-
-// Pino logger silent — tidak spam terminal
 const logger = pino({ level: 'silent' });
+
+// ─── Database Auth State Provider ─────────────────────────────────────────
+
+async function ensureAuthTable() {
+  const exists = await db.schema.hasTable('whatsapp_auth');
+  if (!exists) {
+    console.log('🏗️ Membuat tabel whatsapp_auth...');
+    await db.schema.createTable('whatsapp_auth', (table) => {
+      table.uuid('id').primary();
+      table.string('category').index();
+      table.string('key_id').index();
+      table.text('data');
+      table.timestamp('updated_at').defaultTo(db.fn.now());
+      table.unique(['category', 'key_id']);
+    });
+  }
+}
+
+async function useDatabaseAuthState(): Promise<{ state: AuthenticationState, saveCreds: () => Promise<void> }> {
+  await ensureAuthTable();
+
+  const writeData = async (data: any, category: string, keyId: string) => {
+    const jsonStr = JSON.stringify(data, BufferJSON.replacer);
+    const existing = await db('whatsapp_auth').where({ category, key_id: keyId }).first();
+    if (existing) {
+      await db('whatsapp_auth').where({ id: existing.id }).update({ data: jsonStr, updated_at: new Date().toISOString() });
+    } else {
+      await db('whatsapp_auth').insert({ id: uuidv4(), category, key_id: keyId, data: jsonStr });
+    }
+  };
+
+  const readData = async (category: string, keyId: string) => {
+    const row = await db('whatsapp_auth').where({ category, key_id: keyId }).first();
+    if (!row) return null;
+    return JSON.parse(row.data, BufferJSON.reviver);
+  };
+
+  const removeData = async (category: string, keyId: string) => {
+    await db('whatsapp_auth').where({ category, key_id: keyId }).delete();
+  };
+
+  let creds: AuthenticationCreds = await readData('creds', 'main') || initAuthCreds();
+
+  return {
+    state: {
+      creds,
+      keys: {
+        get: async (type, ids) => {
+          const data: { [key: string]: any } = {};
+          await Promise.all(
+            ids.map(async (id) => {
+              let value = await readData(type, id);
+              if (type === 'app-state-sync-key' && value) {
+                value = proto.Message.AppStateSyncKeyData.fromObject(value);
+              }
+              data[id] = value;
+            })
+          );
+          return data;
+        },
+        set: async (data) => {
+          for (const category in data) {
+            for (const id in data[category as keyof SignalDataTypeMap]) {
+              const value = data[category as keyof SignalDataTypeMap]![id];
+              if (value) {
+                await writeData(value, category, id);
+              } else {
+                await removeData(category, id);
+              }
+            }
+          }
+        }
+      }
+    },
+    saveCreds: async () => {
+      await writeData(creds, 'creds', 'main');
+    }
+  };
+}
 
 // ─── Connect ke WhatsApp ──────────────────────────────────────────────────
 export async function connectWhatsApp(): Promise<void> {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { state, saveCreds } = await useDatabaseAuthState();
   const { version } = await fetchLatestBaileysVersion();
 
   waSocket = makeWASocket({
     version,
     auth: state,
     logger,
+    printQRInTerminal: false,
   });
 
   waSocket.ev.on('creds.update', saveCreds);
@@ -43,7 +120,7 @@ export async function connectWhatsApp(): Promise<void> {
   waSocket.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
     if (qr) {
       qrCode = qr;
-      console.log('\n📱 Scan QR Code AgriHub WhatsApp Bot:\n');
+      console.log('\n📱 Scan QR Code AgriHub WhatsApp Bot (Database Persistent Mode):\n');
       qrcodeTerminal.generate(qr, { small: true });
     }
     if (connection === 'close') {
@@ -51,18 +128,22 @@ export async function connectWhatsApp(): Promise<void> {
       const reason = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const shouldReconnect = reason !== DisconnectReason.loggedOut;
       console.log('WA disconnected, reason:', reason, 'reconnecting:', shouldReconnect);
-      if (shouldReconnect) setTimeout(connectWhatsApp, 3000);
+      if (shouldReconnect) {
+        setTimeout(connectWhatsApp, 5000);
+      } else {
+        console.log('🧹 Logging out, clearing database session...');
+        db('whatsapp_auth').delete().catch(e => console.error('Gagal hapus session:', e));
+      }
     } else if (connection === 'open') {
       isConnected = true;
       qrCode = '';
-      console.log('✅ AgriHub WhatsApp Bot terhubung!');
+      console.log('✅ AgriHub WhatsApp Bot terhubung (MOD DEPLOY-PROOF)!');
     }
   });
 
-  // Sambutan saat bot dimasukkan ke grup
   waSocket.ev.on('group-participants.update', async (update) => {
     const botId = waSocket?.user?.id?.split(':')[0] || '';
-    if (update.action === 'add' && update.participants.some(p => p.id && p.id.startsWith(botId))) {
+    if (update.action === 'add' && update.participants.some((p: any) => p.id?.startsWith(botId))) {
       console.log(`👋 Bot ditambahkan ke grup: ${update.id}`);
       await sendWAMessage(update.id, '🌾 *Halo semuanya! Saya AsistenTani AgriHub.*\n\nSaya siap membantu di grup ini! Tag saya atau ketik *MENU* untuk melihat perintah yang tersedia. Selamat bertani! 🚜🌿');
     }
@@ -77,74 +158,40 @@ export async function connectWhatsApp(): Promise<void> {
   });
 }
 
-/** 
- * Request Pairing Code
- * Alternatif untuk scan QR bagi kamera rusak
- */
 export async function getWAPairingCode(phoneNumber: string): Promise<string> {
-  // Bersihkan nomor (hanya angka)
   const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
   if (!cleanPhone) throw new Error('Nomor HP tidak valid');
 
-  // Jika sudah terhubung, cek apakah nomornya sama
+  await ensureAuthTable();
+
   if (isConnected && waSocket?.user?.id?.startsWith(cleanPhone)) {
-    throw new Error('WhatsApp sudah terhubung dengan nomor ini.');
+    return 'ALREADY_CONNECTED';
   }
 
-  // Jika ingin pairing baru (dengan nomor baru atau saat terputus), 
-  // baru kita bersihkan session lama.
-  try {
-    if (fs.existsSync(AUTH_DIR)) {
-      const credsReqPath = path.join(AUTH_DIR, 'creds.json');
-      let currentPhone = null;
-
-      if (fs.existsSync(credsReqPath)) {
-        const fileContent = fs.readFileSync(credsReqPath, 'utf-8');
-        if (fileContent && fileContent.trim()) {
-          const currentAuth = JSON.parse(fileContent);
-          currentPhone = currentAuth.me?.id?.split(':')[0];
-        }
-      }
-
-      if (!isConnected || (currentPhone && currentPhone !== cleanPhone)) {
-        console.log('🧹 Menghapus session lama karena nomor berbeda atau status disconnect...');
-        if (waSocket) {
-          try {
-            waSocket.ev.removeAllListeners('connection.update');
-            waSocket.end(undefined);
-          } catch {}
-          waSocket = null;
-        }
-        const files = fs.readdirSync(AUTH_DIR);
-        for (const file of files) {
-          try { fs.unlinkSync(path.join(AUTH_DIR, file)); } catch {}
-        }
-      } else if (isConnected) {
-        // Jika sudah konek dengan nomor yang sama, kembalikan sukses saja
-        return 'ALREADY_CONNECTED';
+  const currentCredsRow = await db('whatsapp_auth').where({ category: 'creds', key_id: 'main' }).first();
+  if (currentCredsRow) {
+    const creds = JSON.parse(currentCredsRow.data, BufferJSON.reviver);
+    const existingNum = creds.me?.id?.split(':')[0];
+    if (existingNum && existingNum !== cleanPhone) {
+      console.log('🧹 Membersihkan database karena nomor berbeda...');
+      await db('whatsapp_auth').delete();
+      if (waSocket) {
+        try { waSocket.end(undefined); } catch {}
+        waSocket = null;
       }
     }
-  } catch (err) {
-    console.warn('⚠️ Gagal memvalidasi/membersihkan session lama (diabaikan):', (err as Error).message);
   }
 
-  // Mulai socket baru jika belum ada atau baru saja dihapus
   if (!waSocket) {
-    console.log('🔄 Memulai socket baru untuk pairing code...');
     await connectWhatsApp();
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(r => setTimeout(r, 5000));
   }
   
-  console.log(`🔑 Meminta Pairing Code untuk: ${cleanPhone}`);
-  
   try {
-    const socket = waSocket;
-    if (!socket) throw new Error('Gagal menginisialisasi socket WhatsApp');
-    const code = await socket.requestPairingCode(cleanPhone);
-    return code;
+    const socket = waSocket!;
+    return await socket.requestPairingCode(cleanPhone);
   } catch (err) {
-    console.error('❌ Error saat meminta pairing code:', err);
-    throw new Error('Gagal meminta Pairing Code. Pastikan server stabil dan coba lagi.');
+    throw new Error('Gagal meminta Pairing Code. Coba lagi nanti.');
   }
 }
 
@@ -153,19 +200,22 @@ export function getWAStatus() {
 }
 
 export async function sendWAMessage(jid: string, text: string): Promise<void> {
-  if (!waSocket || !isConnected) throw new Error('WhatsApp bot tidak terhubung');
+  if (!waSocket || !isConnected) return;
   await waSocket.sendMessage(jid, { text });
 }
 
-// ─── Commands Parser ──────────────────────────────────────────────────────
+// ─── Message Handler Logic ──────────────────────────────────────────────
 
 async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   if (!msg.key) return;
   const jid = msg.key.remoteJid!;
   const isGroup = jid.endsWith('@g.us');
+  
   const text = (
     msg.message?.conversation ||
     msg.message?.extendedTextMessage?.text ||
+    msg.message?.imageMessage?.caption ||
+    msg.message?.videoMessage?.caption ||
     ''
   ).trim();
 
@@ -174,14 +224,21 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   const upper = text.toUpperCase();
   const sender = msg.key.participant || msg.key.remoteJid || '';
 
-  try {
-    // ── Personal Commands ──────────────────────────────────────────────
+  const botId = waSocket?.user?.id?.split(':')[0] || '';
+  const botJid = botId + '@s.whatsapp.net';
+  const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+  
+  const isMentioned = 
+    mentionedJids.includes(botJid) || 
+    text.includes(`@${botId}`) ||
+    (isGroup && text.toLowerCase().includes('asistentani'));
 
-    // DAFTAR TOKO
+  try {
+    // ── DAFTAR TOKO ──────────────────────────────────────────────
     if (upper.startsWith('DAFTAR TOKO')) {
       const parts = text.split('|').map(s => s.trim());
       if (parts.length < 3) {
-        await sendWAMessage(jid, '📝 Format: DAFTAR TOKO | Nama Toko | Kabupaten | Provinsi | Jenis Produk\n\nContoh:\nDAFTAR TOKO | Tani Maju | Bengkulu Tengah | Bengkulu | Cabai, Sayuran');
+        await sendWAMessage(jid, '📝 Format: DAFTAR TOKO | Nama Toko | Kabupaten | Provinsi | Produk\n\nContoh:\nDAFTAR TOKO | Tani Maju | Bengkulu Tengah | Bengkulu | Cabai, Sayuran');
         return;
       }
       const [, name, kabupaten, provinsi, product_types] = parts;
@@ -210,7 +267,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
       return;
     }
 
-    // JUAL [nama_produk] [harga] [stok]
+    // ── JUAL ────────────────────────────────────────────────────
     if (upper.startsWith('JUAL ')) {
       const parts = text.slice(5).trim().split(/\s+/);
       if (parts.length < 3) {
@@ -238,7 +295,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
       return;
     }
 
-    // ONGKIR [asal_kode_pos] [tujuan_kode_pos] [berat_kg]
+    // ── ONGKIR ──────────────────────────────────────────────────
     if (upper.startsWith('ONGKIR ')) {
       const parts = text.slice(7).trim().split(/\s+/);
       if (parts.length < 3) {
@@ -258,7 +315,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
       return;
     }
 
-    // STOK — cek stok toko sendiri
+    // ── STOK ────────────────────────────────────────────────────
     if (upper === 'STOK') {
       const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
       const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
@@ -266,14 +323,14 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
       if (!store) { await sendWAMessage(jid, '❌ Anda belum punya toko.'); return; }
       const products = await db('products').where({ store_id: store.id, is_active: true });
       if (products.length === 0) { await sendWAMessage(jid, '📭 Toko Anda belum punya produk aktif.'); return; }
-      const stokText = products.map((p: Record<string, unknown>, i: number) =>
+      const stokText = products.map((p, i) =>
         `${i + 1}. ${p.name}\n   📦 ${p.stock_quantity} ${p.unit} @ Rp${Number(p.price_per_unit).toLocaleString('id-ID')}`
       ).join('\n');
       await sendWAMessage(jid, `🏪 *Stok ${store.name}*\n\n${stokText}`);
       return;
     }
 
-    // PESANAN — cek pesanan terbaru
+    // ── PESANAN ─────────────────────────────────────────────────
     if (upper === 'PESANAN') {
       const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
       const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
@@ -286,53 +343,49 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
         .limit(5)
         .select('orders.id', 'orders.status', 'orders.total_amount', 'orders.quantity', 'products.name as product_name');
       if (orders.length === 0) { await sendWAMessage(jid, '📭 Belum ada pesanan masuk.'); return; }
-      const orderText = orders.map((o: Record<string, unknown>, i: number) =>
+      const orderText = orders.map((o, i) =>
         `${i + 1}. ${o.product_name} (${o.quantity}kg)\n   💰 Rp${Number(o.total_amount).toLocaleString('id-ID')} | Status: ${o.status}`
       ).join('\n');
       await sendWAMessage(jid, `📦 *5 Pesanan Terbaru*\n\n${orderText}`);
       return;
     }
 
-    // MENU / HELP
+    // ── MENU / HELP ─────────────────────────────────────────────
     if (upper === 'MENU' || upper === 'HELP') {
       await sendWAMessage(jid, `🌾 *Menu AgriHub Bot*\n\n*Seller:*\n• DAFTAR TOKO | nama | kab | prov | produk\n• JUAL [produk] [harga] [stok]\n• STOK — lihat stok toko\n• PESANAN — 5 pesanan terbaru\n\n*Logistik:*\n• ONGKIR [kode pos asal] [tujuan] [berat kg]\n\n*AI Konsultan:*\n• Tanya apa saja tentang pertanian\n  Contoh: "Cara atasi wereng?"\n\n_Info lengkap: https://agrihub.id_`);
       return;
     }
 
-    // ── AI Chat (jika bukan command) ───────────────────────────────────────
-    // Deteksi mention di grup via contextInfo
-    const botId = waSocket?.user?.id?.split(':')[0] || '';
-    const botJid = waSocket?.user?.id?.split(':')[0] + '@s.whatsapp.net';
-    const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
-    const isMentioned = text.includes(`@${botId}`) || mentionedJids.includes(botJid);
+    // ── AI Hub Interaction ──
+    const isCommand = ['DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP'].some(c => upper.startsWith(c));
+    
+    if (isGroup && !isMentioned) return;
+    
+    if (!isCommand) {
+       if (isGroup) {
+         const credit = await checkGroupCredit(jid);
+         if (!credit.allowed) {
+            if (isMentioned) await sendWAMessage(jid, `⚠️ *Kredit AI Grup Habis.*\nHubungi admin.`);
+            return;
+         }
+         await deductGroupCredit(jid, 0.05);
+       }
 
-    if (isGroup) {
-      if (!isMentioned) return; // Hiraukan chat grup biasa jika tidak di-tag
+       const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
+       const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+       const promptText = text.replace(new RegExp(`@${botId}|@${botId.slice(2)}`, 'g'), '').trim();
 
-      const credit = await checkGroupCredit(jid);
-      if (!credit.allowed) {
-        await sendWAMessage(jid, `⚠️ *AI Grup Nonaktif*\n\n${credit.reason || 'Kredit habis.'}\nHubungi admin untuk aktivasi.`);
-        return;
-      }
-      await deductGroupCredit(jid, 0.05);
+       const aiReply = await chatWithAI({
+         message: promptText || 'Halo!',
+         history: [],
+         userId: user ? user.id : 'wa-bot',
+         useRag: true
+       });
+
+       await sendWAMessage(jid, `🌱 ${aiReply.reply}${aiReply.ragSources.length > 0 ? `\n\n_📚 Sumber: ${aiReply.ragSources.join(', ')}_` : ''}`);
     }
 
-    // Cari user ID berdasarkan nomor pengirim
-    const userPhone = sender.split('@')[0].replace(/[^0-9]/g, '');
-    const user = await db('users').where('phone', 'like', `%${userPhone.slice(-9)}%`).first();
-
-    // Hapus mention dari text sebelum dikirim ke AI
-    const promptText = text.replace(`@${botId}`, '').trim();
-
-    const aiReply = await chatWithAI({
-      message: promptText || 'Halo!', 
-      history: [], 
-      userId: user ? user.id : 'wa-bot',
-      useRag: true,
-    });
-
-    await sendWAMessage(jid, `🌱 ${aiReply.reply}${aiReply.ragSources.length > 0 ? `\n\n_📚 Sumber: ${aiReply.ragSources.join(', ')}_` : ''}`);
   } catch (err) {
-    console.error('WA message handler error:', err);
+    console.error('WA handleMessage error:', err);
   }
 }

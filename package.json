@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist')){console.log('Building...');require('child_process').execSync('npx tsc',{stdio:'inherit'})}else{console.log('Dist exists, skipping tsc...')}\"",
+    "build": "node scripts/build.js",
     "start": "node dist/index.js",
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts"

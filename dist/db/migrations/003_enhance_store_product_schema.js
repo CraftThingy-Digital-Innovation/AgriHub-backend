@@ -32,4 +32,4 @@ async function down(knex) {
         t.dropColumn('images_json');
     });
 }
-//# sourceMappingURL=20260323_enhance_store_product_schema.js.map
+//# sourceMappingURL=003_enhance_store_product_schema.js.map

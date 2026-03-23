@@ -19,4 +19,4 @@ async function down(knex) {
         });
     }
 }
-//# sourceMappingURL=20260323_add_puter_token_to_users.js.map
+//# sourceMappingURL=002_add_puter_token.js.map
