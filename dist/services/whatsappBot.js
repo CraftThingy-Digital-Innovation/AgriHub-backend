@@ -37,6 +37,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.connectWhatsApp = connectWhatsApp;
+exports.getWAPairingCode = getWAPairingCode;
 exports.getWAStatus = getWAStatus;
 exports.sendWAMessage = sendWAMessage;
 const baileys_1 = __importStar(require("baileys"));
@@ -97,6 +98,25 @@ async function connectWhatsApp() {
             await handleMessage(msg);
         }
     });
+}
+/**
+ * Request Pairing Code
+ * Alternatif untuk scan QR bagi kamera rusak
+ */
+async function getWAPairingCode(phoneNumber) {
+    if (!waSocket) {
+        await connectWhatsApp();
+    }
+    if (isConnected) {
+        throw new Error('WhatsApp sudah terhubung. Logout dulu jika ingin ganti akun.');
+    }
+    // Bersihkan nomor (hanya angka)
+    const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
+    if (!cleanPhone)
+        throw new Error('Nomor HP tidak valid');
+    console.log(`🔑 Meminta Pairing Code untuk: ${cleanPhone}`);
+    const code = await waSocket.requestPairingCode(cleanPhone);
+    return code;
 }
 function getWAStatus() {
     return { isConnected, hasQR: !!qrCode, qrCode };

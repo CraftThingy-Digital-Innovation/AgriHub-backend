@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/knex';
 import { requireAuth, requireAdmin, AuthRequest } from '../middleware/auth';
-import { getWAStatus } from '../services/whatsappBot';
+import { getWAStatus, getWAPairingCode } from '../services/whatsappBot';
 import { connectWhatsApp } from '../services/whatsappBot';
 
 const router = Router();
@@ -97,6 +97,24 @@ router.get('/wa-status', (_req, res: Response): void => {
 router.post('/wa-connect', (_req, res: Response): void => {
   connectWhatsApp().catch(err => console.error('WA connect error:', err));
   res.json({ success: true, message: 'Mencoba menghubungkan WA Bot... Cek terminal untuk QR' });
+});
+
+/** 
+ * POST /api/admin/wa-pairing-code
+ * Request 8-char code for phone-entry pairing
+ */
+router.post('/wa-pairing-code', async (req, res: Response): Promise<void> => {
+  try {
+    const { phone } = req.body;
+    if (!phone) {
+      res.status(400).json({ success: false, error: 'Nomor HP wajib diisi' });
+      return;
+    }
+    const code = await getWAPairingCode(phone);
+    res.json({ success: true, data: { code } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: (err as Error).message });
+  }
 });
 
 // ─── GET /api/admin/rag-docs ──────────────────────────────────────────────
