@@ -138,12 +138,14 @@ export async function connectWhatsApp(): Promise<void> {
       isConnected = true;
       qrCode = '';
       console.log('✅ AgriHub WhatsApp Bot terhubung (MOD DEPLOY-PROOF)!');
+      console.log('🤖 Identity:', JSON.stringify(waSocket?.user || {}, null, 2));
     }
   });
 
   waSocket.ev.on('group-participants.update', async (update) => {
-    const botId = waSocket?.user?.id?.split(':')[0] || '';
-    if (update.action === 'add' && update.participants.some((p: any) => p.id?.startsWith(botId))) {
+    const botId = waSocket?.user?.id?.split('@')[0].split(':')[0] || '';
+    const botLid = (waSocket?.user as any)?.lid?.split('@')[0] || '';
+    if (update.action === 'add' && update.participants.some((p: any) => p.id?.startsWith(botId) || (botLid && p.id?.startsWith(botLid)))) {
       console.log(`👋 Bot ditambahkan ke grup: ${update.id}`);
       await sendWAMessage(update.id, '🌾 *Halo semuanya! Saya AsistenTani AgriHub.*\n\nSaya siap membantu di grup ini! Tag saya atau ketik *MENU* untuk melihat perintah yang tersedia. Selamat bertani! 🚜🌿');
     }
@@ -224,11 +226,13 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   const upper = text.toUpperCase();
   const sender = msg.key.participant || msg.key.remoteJid || '';
 
-  // ── DETEKSI MENTION YANG KUAT ──────────────────────────────────────────
-  // ── DETEKSI MENTION YANG KUAT ──────────────────────────────────────────
+  // ── DETEKSI MENTION YANG KUAT (Phone ID & LID) ─────────────────────────
   const botFullId = waSocket?.user?.id || '';
   const botId = botFullId.split('@')[0].split(':')[0] || '';
-  const botJid = botId + '@s.whatsapp.net';
+  const botLidFull = (waSocket?.user as any)?.lid || '';
+  const botLid = botLidFull.split('@')[0] || '';
+  
+  const botJids = [botFullId, botId + '@s.whatsapp.net', botLidFull].filter(Boolean);
   
   const contextInfo = 
     msg.message?.extendedTextMessage?.contextInfo || 
@@ -239,21 +243,30 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   
   const mentionedJids = contextInfo?.mentionedJid || [];
   
-  // Teks pembersihan untuk pengecekan command (Hapus `@nomor ` di awal)
-  const cleanText = text.replace(new RegExp(`^@${botId}\\s*|^@${botId.slice(2)}\\s*|^@AsistenTani\\s*|^@Bot\\s*`, 'gi'), '').trim();
+  // Regex untuk membersihkan mention dari teks (baik nomor HP atau LID)
+  const regexPatterns = [
+    `^@${botId}\\s*`,
+    `^@${botId.slice(2)}\\s*`,
+    `^@${botLid}\\s*`,
+    `^@AsistenTani\\s*`,
+    `^@Bot\\s*`,
+    `^@Agrihub\\s*`
+  ].filter(p => !p.includes('^@\\s*')).join('|');
+  
+  const cleanText = text.replace(new RegExp(regexPatterns, 'gi'), '').trim();
   const cleanUpper = cleanText.toUpperCase();
 
-  // Status mention: JID cocok, atau teks mengandung keyword, atau diawali mention
+  // Status mention: JID cocok, LID cocok, nomor cocok di teks, atau keyword terpancing
   const isMentioned = 
-    mentionedJids.includes(botJid) || 
+    mentionedJids.some(mj => botJids.includes(mj)) || 
     text.includes(`@${botId}`) ||
-    text.includes(`@${botId.slice(2)}`) ||
-    cleanText !== text || // Jika ada yang di-strip berarti ada mention di awal
+    (botLid && text.includes(`@${botLid}`)) ||
+    cleanText !== text || 
     (isGroup && text.toLowerCase().includes('asistentani')) ||
     (isGroup && text.toLowerCase().includes('bot'));
 
   if (isGroup) {
-    console.log(`📩 [GROUP] From: ${sender} in ${jid} | Text: "${text.slice(0, 30)}" | Clean: "${cleanText.slice(0, 30)}" | Mention: ${isMentioned}`);
+    console.log(`📩 [GROUP] From: ${sender} in ${jid} | Text: "${text}" | Clean: "${cleanText}" | Mention: ${isMentioned}`);
   }
 
   try {
