@@ -13,6 +13,7 @@ import authRouter from './routes/auth';
 import productsRouter from './routes/products';
 import storesRouter from './routes/stores';
 import ordersRouter from './routes/orders';
+import ragRouter from './routes/rag';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -50,6 +51,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/products', productsRouter);
 app.use('/api/stores', storesRouter);
 app.use('/api/orders', ordersRouter);
+app.use('/api/rag', ragRouter);
 
 // ── Serve Vite Build (Production) ─────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
