@@ -8,13 +8,21 @@ export async function runMigrations(): Promise<void> {
     console.log('🗄️  Running database migrations...');
     
     // Fix for "corrupt migration directory" when moving from .ts (dev) to .js (dist)
+    // AND handling manual renames (20260323_... -> 00x_...)
     try {
       const hasTable = await db.schema.hasTable('knex_migrations');
       if (hasTable) {
+        // Fix TS to JS
         await db.raw("UPDATE knex_migrations SET name = REPLACE(name, '.ts', '.js') WHERE name LIKE '%.ts'");
+        
+        // Fix manual renames of specific files that are causing "MISSING" errors
+        await db.raw("UPDATE knex_migrations SET name = '002_add_puter_token.js' WHERE name = '20260323_add_puter_token_to_users.js'");
+        await db.raw("UPDATE knex_migrations SET name = '003_enhance_store_product_schema.js' WHERE name = '20260323_enhance_store_product_schema.js'");
+        
+        console.log('🔧 Migration history repaired.');
       }
     } catch (e) {
-      // Ignore if table doesn't exist or SQL fails
+      console.warn('⚠️ Repair step failed (possibly already fixed):', (e as Error).message);
     }
 
     const [batchNo, log] = await db.migrate.latest();
