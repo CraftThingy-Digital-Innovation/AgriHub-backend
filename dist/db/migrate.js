@@ -10,6 +10,16 @@ const knex_1 = __importDefault(require("../config/knex"));
 async function runMigrations() {
     try {
         console.log('🗄️  Running database migrations...');
+        // Fix for "corrupt migration directory" when moving from .ts (dev) to .js (dist)
+        try {
+            const hasTable = await knex_1.default.schema.hasTable('knex_migrations');
+            if (hasTable) {
+                await knex_1.default.raw("UPDATE knex_migrations SET name = REPLACE(name, '.ts', '.js') WHERE name LIKE '%.ts'");
+            }
+        }
+        catch (e) {
+            // Ignore if table doesn't exist or SQL fails
+        }
         const [batchNo, log] = await knex_1.default.migrate.latest();
         if (log.length === 0) {
             console.log('✅ Database is already up to date.');
