@@ -68,10 +68,24 @@ app.get('/api/wa/status', (_req, res) => res.json({ success: true, data: (0, wha
 // ── Serve Vite Build (Production) ─────────────────────────────────────────
 if (process.env.NODE_ENV === 'production') {
     const distPath = path_1.default.resolve(__dirname, '../../frontend/dist');
-    app.use(express_1.default.static(distPath));
-    app.get('*', (_req, res) => {
-        res.sendFile(path_1.default.join(distPath, 'index.html'));
-    });
+    const fs = require('fs');
+    if (fs.existsSync(distPath)) {
+        app.use(express_1.default.static(distPath));
+        app.get('*', (_req, res) => {
+            res.sendFile(path_1.default.join(distPath, 'index.html'));
+        });
+        console.log(`🌾  Serving frontend from: ${distPath}`);
+    }
+    else {
+        console.log('⚠️  Frontend dist not found, running in headless API mode.');
+        app.get('/', (_req, res) => {
+            res.json({
+                success: true,
+                message: 'AgriHub API is running in headless mode. Use /api/ for endpoints.',
+                health: '/health'
+            });
+        });
+    }
 }
 // ── Error Handlers ────────────────────────────────────────────────────────
 app.use(errorHandler_1.notFoundHandler);
