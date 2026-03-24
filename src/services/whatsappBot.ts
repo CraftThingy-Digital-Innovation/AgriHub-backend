@@ -107,7 +107,39 @@ async function useDatabaseAuthState(): Promise<{ state: AuthenticationState, sav
 }
 
 // ─── Connect ke WhatsApp ──────────────────────────────────────────────────
+import { downloadMediaMessage } from 'baileys';
+import { parseFile } from './documentParser';
+import { storeDocument } from './ragService';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+
+// ─── Ensure System Users ────────────────────────────────────────────────
+async function ensureSystemUsers() {
+  const botId = 'wa-bot';
+  const exists = await db('users').where({ id: botId }).first();
+  if (!exists) {
+    console.log('🤖 Creating system user: wa-bot');
+    await db('users').insert({
+      id: botId,
+      name: 'AsistenTani Bot',
+      email: 'bot@agrihub.id',
+      phone: '0000000000',
+      password: uuidv4(), // Random password
+      role: 'admin',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+  }
+}
+
+let isInitialized = false;
+
 export async function connectWhatsApp(): Promise<void> {
+  if (!isInitialized) {
+    await ensureSystemUsers();
+    isInitialized = true;
+  }
   const { state, saveCreds } = await useDatabaseAuthState();
   const { version } = await fetchLatestBaileysVersion();
 
@@ -198,9 +230,85 @@ export async function connectWhatsApp(): Promise<void> {
     if (type !== 'notify') return;
     for (const msg of messages) {
       if (!msg.message || msg.key.fromMe) continue;
-      await handleMessage(msg);
+      
+      // Handle Documents (PDF, etc.)
+      const doc = msg.message.documentMessage || msg.message.documentWithCaptionMessage?.message?.documentMessage;
+      if (doc) {
+        await handleDocumentUpload(msg, doc);
+      } else {
+        await handleMessage(msg);
+      }
     }
   });
+}
+
+async function handleDocumentUpload(msg: any, doc: any) {
+  const jid = msg.key.remoteJid;
+  const sender = msg.key.participant || msg.key.remoteJid;
+  const fileName = doc.fileName || 'dokumen.pdf';
+  const mimeType = doc.mimetype;
+
+  // Hanya proses PDF, TXT, dan MD untuk saat ini
+  const allowed = ['application/pdf', 'text/plain', 'text/markdown'];
+  if (!allowed.includes(mimeType)) {
+    // Abaikan jika bukan tipe yang didukung
+    return;
+  }
+
+  try {
+    // 1. Identifikasi siapa penanggung jawab (owner) grup/chat ini
+    let ownerId = 'wa-bot';
+    const groupMeta = await db('group_credits').where({ group_jid: jid }).first();
+    
+    if (jid.endsWith('@g.us')) {
+      if (!groupMeta || !groupMeta.owner_id) {
+        await sendWAMessage(jid, '⚠️ Dokumen tidak bisa dipelajari karena grup ini belum memiliki Penanggung Jawab AI. Silakan tentukan dulu siapa penanggung jawabnya.');
+        return;
+      }
+      ownerId = groupMeta.owner_id;
+    } else {
+      // Private chat
+      const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
+      const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+      if (!user) {
+        await sendWAMessage(jid, '⚠️ Silakan daftar AgriHub dulu agar saya bisa menyimpan dokumen Anda ke Knowledge Base.');
+        return;
+      }
+      ownerId = user.id;
+    }
+
+    await sendWAMessage(jid, `⏳ Sedang mempelajari dokumen: *${fileName}*...`);
+
+    // 2. Download media
+    const buffer = await downloadMediaMessage(msg, 'buffer', {});
+    
+    // 3. Simpan ke temp file agar bisa di-parse
+    const tempDir = os.tmpdir();
+    const tempPath = path.join(tempDir, `wa_${uuidv4()}_${fileName}`);
+    fs.writeFileSync(tempPath, buffer as Buffer);
+
+    try {
+        // 4. Parse content
+        const content = await parseFile(tempPath);
+        
+        // 5. Store in RAG
+        await storeDocument({
+          userId: ownerId,
+          title: fileName,
+          sourceType: mimeType === 'application/pdf' ? 'pdf' : 'text',
+          content: content,
+          isGlobal: false
+        });
+
+        await sendWAMessage(jid, `✅ *Berhasil!* Saya sudah selesai mempelajari dokumen *${fileName}*.\n\nSekarang Anda bisa bertanya apapun tentang isinya, saya akan otomatis mencari jawabannya di sana! 💡🤖`);
+    } finally {
+        // Hapus temp file
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    }
+  } catch (err) {
+    console.error('Document Upload Error:', err);
+    await sendWAMessage(jid, `❌ Gagal memproses dokumen *${fileName}*: ` + (err as Error).message);
+  }
 }
 
 export async function getWAPairingCode(phoneNumber: string): Promise<string> {

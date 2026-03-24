@@ -128,7 +128,36 @@ async function useDatabaseAuthState() {
     };
 }
 // ─── Connect ke WhatsApp ──────────────────────────────────────────────────
+const baileys_2 = require("baileys");
+const documentParser_1 = require("./documentParser");
+const ragService_1 = require("./ragService");
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const os_1 = __importDefault(require("os"));
+// ─── Ensure System Users ────────────────────────────────────────────────
+async function ensureSystemUsers() {
+    const botId = 'wa-bot';
+    const exists = await (0, knex_1.default)('users').where({ id: botId }).first();
+    if (!exists) {
+        console.log('🤖 Creating system user: wa-bot');
+        await (0, knex_1.default)('users').insert({
+            id: botId,
+            name: 'AsistenTani Bot',
+            email: 'bot@agrihub.id',
+            phone: '0000000000',
+            password: (0, uuid_1.v4)(), // Random password
+            role: 'admin',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+        });
+    }
+}
+let isInitialized = false;
 async function connectWhatsApp() {
+    if (!isInitialized) {
+        await ensureSystemUsers();
+        isInitialized = true;
+    }
     const { state, saveCreds } = await useDatabaseAuthState();
     const { version } = await (0, baileys_1.fetchLatestBaileysVersion)();
     waSocket = (0, baileys_1.default)({
@@ -215,9 +244,79 @@ async function connectWhatsApp() {
         for (const msg of messages) {
             if (!msg.message || msg.key.fromMe)
                 continue;
-            await handleMessage(msg);
+            // Handle Documents (PDF, etc.)
+            const doc = msg.message.documentMessage || msg.message.documentWithCaptionMessage?.message?.documentMessage;
+            if (doc) {
+                await handleDocumentUpload(msg, doc);
+            }
+            else {
+                await handleMessage(msg);
+            }
         }
     });
+}
+async function handleDocumentUpload(msg, doc) {
+    const jid = msg.key.remoteJid;
+    const sender = msg.key.participant || msg.key.remoteJid;
+    const fileName = doc.fileName || 'dokumen.pdf';
+    const mimeType = doc.mimetype;
+    // Hanya proses PDF, TXT, dan MD untuk saat ini
+    const allowed = ['application/pdf', 'text/plain', 'text/markdown'];
+    if (!allowed.includes(mimeType)) {
+        // Abaikan jika bukan tipe yang didukung
+        return;
+    }
+    try {
+        // 1. Identifikasi siapa penanggung jawab (owner) grup/chat ini
+        let ownerId = 'wa-bot';
+        const groupMeta = await (0, knex_1.default)('group_credits').where({ group_jid: jid }).first();
+        if (jid.endsWith('@g.us')) {
+            if (!groupMeta || !groupMeta.owner_id) {
+                await sendWAMessage(jid, '⚠️ Dokumen tidak bisa dipelajari karena grup ini belum memiliki Penanggung Jawab AI. Silakan tentukan dulu siapa penanggung jawabnya.');
+                return;
+            }
+            ownerId = groupMeta.owner_id;
+        }
+        else {
+            // Private chat
+            const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
+            const user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+            if (!user) {
+                await sendWAMessage(jid, '⚠️ Silakan daftar AgriHub dulu agar saya bisa menyimpan dokumen Anda ke Knowledge Base.');
+                return;
+            }
+            ownerId = user.id;
+        }
+        await sendWAMessage(jid, `⏳ Sedang mempelajari dokumen: *${fileName}*...`);
+        // 2. Download media
+        const buffer = await (0, baileys_2.downloadMediaMessage)(msg, 'buffer', {});
+        // 3. Simpan ke temp file agar bisa di-parse
+        const tempDir = os_1.default.tmpdir();
+        const tempPath = path_1.default.join(tempDir, `wa_${(0, uuid_1.v4)()}_${fileName}`);
+        fs_1.default.writeFileSync(tempPath, buffer);
+        try {
+            // 4. Parse content
+            const content = await (0, documentParser_1.parseFile)(tempPath);
+            // 5. Store in RAG
+            await (0, ragService_1.storeDocument)({
+                userId: ownerId,
+                title: fileName,
+                sourceType: mimeType === 'application/pdf' ? 'pdf' : 'text',
+                content: content,
+                isGlobal: false
+            });
+            await sendWAMessage(jid, `✅ *Berhasil!* Saya sudah selesai mempelajari dokumen *${fileName}*.\n\nSekarang Anda bisa bertanya apapun tentang isinya, saya akan otomatis mencari jawabannya di sana! 💡🤖`);
+        }
+        finally {
+            // Hapus temp file
+            if (fs_1.default.existsSync(tempPath))
+                fs_1.default.unlinkSync(tempPath);
+        }
+    }
+    catch (err) {
+        console.error('Document Upload Error:', err);
+        await sendWAMessage(jid, `❌ Gagal memproses dokumen *${fileName}*: ` + err.message);
+    }
 }
 async function getWAPairingCode(phoneNumber) {
     const cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
