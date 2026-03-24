@@ -19,19 +19,25 @@ exports.AI_MODELS = {
 };
 // ─── System prompt khusus AgriHub ─────────────────────────────────────────
 const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub Indonesia yang ramah dan berpengetahuan luas.
+ 
+ Keahlianmu meliputi:
+ - Budidaya tanaman pangan Indonesia (padi, jagung, cabai, sayuran, dll)
+ - Pengendalian hama dan penyakit tanaman
+ - Teknik irigasi dan pemupukan
+ - Analisis harga pasar dan tren komoditas
+ - Tips panen dan pascapanen
+ - Informasi logistik dan distribusi hasil tani
+ - Panduan menggunakan platform AgriHub
+ 
+ Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan singkat, jelas, dan praktis. 
 
-Keahlianmu meliputi:
-- Budidaya tanaman pangan Indonesia (padi, jagung, cabai, sayuran, dll)
-- Pengendalian hama dan penyakit tanaman
-- Teknik irigasi dan pemupukan
-- Analisis harga pasar dan tren komoditas
-- Tips panen dan pascapanen
-- Informasi logistik dan distribusi hasil tani
-- Panduan menggunakan platform AgriHub
+ ### AKSES DOKUMEN (KNOWLEDGE BASE)
+ Anda MEMILIKI akses ke dokumen pengetahuan (PDF/Excel/Teks) yang diunggah pengguna. Konten dokumen tersebut akan muncul di bawah sebagai teks. 
+ - Jika Anda melihat bagian "INFORMASI DARI DOKUMEN PENGETAHUAN", gunakan informasi tersebut sedetail mungkin.
+ - JANGAN PERNAH mengatakan "Saya tidak dapat mengakses dokumen ini" jika teksnya ada di konteks. 
+ - Jika pengguna bertanya "apa isinya?" atau "jelaskan dokumen ini", ringkaslah teks yang Anda lihat di context.
 
-Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan singkat, jelas, dan praktis. Jika ada informasi dari dokumen pengetahuan petani, gunakan info tersebut sebagai referensi utama.
-
-Jika pertanyaan di luar konteks pertanian, arahkan kembali ke topik pertanian atau fitur AgriHub.`;
+ Jika informasi dari dokumen sudah mencukupi, jangan lagi mengarahkan ke topik umum. Namun jika benar-benar tidak ada info yang relevan sama sekali, baru arahkan kembali ke topik pertanian umum.`;
 // ─── Main chat function ────────────────────────────────────────────────────
 async function chatWithAI(opts) {
     const { message, history: providedHistory, userId, whatsappJid, useRag = true, model = exports.AI_MODELS.default } = opts;
@@ -57,8 +63,23 @@ async function chatWithAI(opts) {
     }
     // 3. RAG: Ambil konteks dari dokumen user jika ada
     if (useRag) {
-        const chunks = await (0, ragService_1.retrieveRelevantChunks)({ query: message, userId, topK: 4 });
-        if (chunks.length > 0) {
+        let chunks = await (0, ragService_1.retrieveRelevantChunks)({ query: message, userId, topK: 4 });
+        // Fallback: Jika pertanyaan sangat pendek/vague (seperti "apa isinya") dan chunks kosong,
+        // ambil dokumen terbaru sebagai konteks umum.
+        if (chunks.length === 0 && (message.length < 20 || message.toLowerCase().includes('isi') || message.toLowerCase().includes('jelaskan'))) {
+            const recentDocs = await (0, knex_1.default)('rag_documents')
+                .where({ user_id: userId })
+                .orWhere({ is_global: 1 })
+                .orderBy('created_at', 'desc')
+                .limit(2);
+            if (recentDocs.length > 0) {
+                ragContext = '\n\n=== DOKUMEN TERBARU ANDA ===\n' +
+                    recentDocs.map(d => `[Judul: ${d.title}]\nPreview: ${d.content_preview || 'Tidak ada preview.'}`).join('\n\n') +
+                    '\n(Gunakan ini jika user bertanya tentang dokumen yang baru saja dikirim atau isi secara umum)\n';
+                ragSources.push(...recentDocs.map(d => d.title));
+            }
+        }
+        else if (chunks.length > 0) {
             ragContext = '\n\n=== INFORMASI DARI DOKUMEN PENGETAHUAN ===\n' +
                 chunks.map(c => `[${c.docTitle}]\n${c.content}`).join('\n\n') +
                 '\n=== AKHIR DOKUMEN ===\n';
