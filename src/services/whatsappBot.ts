@@ -227,18 +227,24 @@ export async function connectWhatsApp(): Promise<void> {
       const lockData = JSON.parse(existingLock.data);
       if (lockData.pid && String(lockData.pid) !== String(process.pid)) {
           console.log(`⚠️ [WA] Ghost detected (PID ${lockData.pid}). Attempting AUTO-KILL...`);
-          try {
-              process.kill(Number(lockData.pid), 'SIGKILL');
-              console.log(`✅ [WA] Killed rogue PID ${lockData.pid}. Continuing...`);
-              // Give it a second to really die
-              await new Promise(r => setTimeout(r, 2000));
-          } catch (e) {
-              console.warn(`❌ [WA] Failed to kill PID ${lockData.pid}: ${(e as Error).message}. Waiting 30s...`);
-              setTimeout(() => connectWhatsApp(), 30000);
-              return;
-          }
-      }
-  }
+           try {
+               process.kill(Number(lockData.pid), 'SIGKILL');
+               console.log(`✅ [WA] Killed rogue PID ${lockData.pid}. Continuing...`);
+               // Give it a second to really die
+               await new Promise(r => setTimeout(r, 2000));
+           } catch (e) {
+               const errMsg = (e as Error).message;
+               if ((e as any).code === 'ESRCH') {
+                   console.log(`✅ [WA] Ghost PID ${lockData.pid} is already dead. Cleaning up stale lock.`);
+               } else {
+                   console.warn(`❌ [WA] Failed to kill PID ${lockData.pid}: ${errMsg}. Proceeding anyway...`);
+               }
+               // Hapus lock yang bermasalah agar kita bisa ambil alih
+               await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).delete();
+               // Jangan return/wait 30s, langsung lanjut proses di bawah
+           }
+       }
+   }
 
   // Upsert Lock
   const lockData = JSON.stringify({ pid: process.pid, startTime: nowUnix });

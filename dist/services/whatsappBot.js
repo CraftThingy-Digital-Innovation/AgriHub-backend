@@ -249,9 +249,16 @@ async function connectWhatsApp() {
                     await new Promise(r => setTimeout(r, 2000));
                 }
                 catch (e) {
-                    console.warn(`❌ [WA] Failed to kill PID ${lockData.pid}: ${e.message}. Waiting 30s...`);
-                    setTimeout(() => connectWhatsApp(), 30000);
-                    return;
+                    const errMsg = e.message;
+                    if (e.code === 'ESRCH') {
+                        console.log(`✅ [WA] Ghost PID ${lockData.pid} is already dead. Cleaning up stale lock.`);
+                    }
+                    else {
+                        console.warn(`❌ [WA] Failed to kill PID ${lockData.pid}: ${errMsg}. Proceeding anyway...`);
+                    }
+                    // Hapus lock yang bermasalah agar kita bisa ambil alih
+                    await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).delete();
+                    // Jangan return/wait 30s, langsung lanjut proses di bawah
                 }
             }
         }
