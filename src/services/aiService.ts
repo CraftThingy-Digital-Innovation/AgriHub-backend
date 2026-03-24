@@ -121,15 +121,24 @@ export async function chatWithAI(opts: {
 
   try {
     // Ambil token puter user dari DB
-    const user = await db('users').where({ id: userId }).select('puter_token').first();
-    if (!user || !user.puter_token) {
+    const user = await db('users').where({ id: userId }).select('puter_token', 'role').first();
+    
+    let activeToken = user?.puter_token;
+    
+    // Bypass untuk admin: Gunakan SYSTEM_PUTER_TOKEN jika user token tidak ada
+    if ((!activeToken || activeToken === '') && user?.role === 'admin') {
+      activeToken = process.env.SYSTEM_PUTER_TOKEN;
+      if (activeToken) console.log(`🛡️ [AI] Admin bypass used for user ${userId}`);
+    }
+
+    if (!activeToken) {
       if (userId === 'wa-bot') {
         return { reply: '❌ Fitur AI dimatikan karena sistem menggunakan Bring Your Own Token. Harap login dan hubungkan akun Puter di web.', ragSources: [] };
       }
       return { reply: '❌ Anda belum menghubungkan akun Puter untuk fitur AI. Silakan hubungkan di Pengaturan Chat.', ragSources: [] };
     }
 
-    const response = await callPuterAI({ messages, model, apiKey: user.puter_token });
+    const response = await callPuterAI({ messages, model, apiKey: activeToken });
     return { reply: response.reply, ragSources, tokensUsed: response.tokensUsed };
   } catch (err) {
     console.error('AI chat error:', err);

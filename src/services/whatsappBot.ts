@@ -166,9 +166,17 @@ export async function connectWhatsApp(): Promise<void> {
   if (existingLock) {
       const lockData = JSON.parse(existingLock.data);
       if (lockData.pid !== process.pid) {
-          console.log(`⏳ [WA] Connection LOCKED by PID ${lockData.pid}. Waiting 30s...`);
-          setTimeout(() => connectWhatsApp(), 30000);
-          return;
+          console.log(`⚠️ [WA] Ghost detected (PID ${lockData.pid}). Attempting AUTO-KILL...`);
+          try {
+              process.kill(lockData.pid, 'SIGKILL');
+              console.log(`✅ [WA] Killed rogue PID ${lockData.pid}. Continuing...`);
+              // Give it a second to really die
+              await new Promise(r => setTimeout(r, 2000));
+          } catch (e) {
+              console.warn(`❌ [WA] Failed to kill PID ${lockData.pid}: ${(e as Error).message}. Waiting 30s...`);
+              setTimeout(() => connectWhatsApp(), 30000);
+              return;
+          }
       }
   }
 
@@ -695,7 +703,8 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
             const freshUser = await db('users').where({ id: pending.userId }).first();
             let msgText = `✅ *Berhasil!* Anda sekarang adalah penanggung jawab resmi untuk AI di grup ini.`;
             
-            if (freshUser && !freshUser.puter_token) {
+            const isAdmin = freshUser?.role === 'admin';
+            if (freshUser && !freshUser.puter_token && !isAdmin) {
                 msgText += `\n\n🔌 *Satu langkah lagi:* Akun Anda belum terhubung ke Puter.com. Silakan klik link sakti ini untuk langsung menghubungkan:\n👉 https://agrihub.rumah-genbi.com/app?action=connect-puter`;
             }
             
@@ -746,7 +755,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
            return;
          }
 
-         if (!owner.puter_token) {
+         if (!owner.puter_token && owner.role !== 'admin') {
            if (isMentioned) await sendWAMessage(jid, `🔌 Penanggung jawab grup ini (@${owner.phone.split(':')[0]}) belum menghubungkan akun Puter.com.\n\nHarap hubungkan di: https://agrihub.rumah-genbi.com/app?action=connect-puter`);
            return;
          }
@@ -778,7 +787,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
            }
            return;
          }
-         if (!user.puter_token) {
+         if (!user.puter_token && user.role !== 'admin') {
            await sendWAMessage(jid, `🔌 *Akun Anda belum terhubung ke Puter.com.*\n\nSilakan klik link ini untuk langsung menghubungkan:\n👉 https://agrihub.rumah-genbi.com/app?action=connect-puter`);
            return;
          }
