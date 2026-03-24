@@ -5,7 +5,7 @@ import { retrieveRelevantChunks } from './ragService';
 // Puter.js di server-side menggunakan REST endpoint mereka
 // Docs: https://docs.puter.com/ai/
 
-const PUTER_API_BASE = 'https://api.puter.com/v2/chat/completions';
+const PUTER_API_BASE = 'https://api.puter.com/drivers/call';
 
 // Model yang direkomendasikan (hemat + kapable)
 export const AI_MODELS = {
@@ -148,10 +148,16 @@ async function callPuterAI(opts: {
   const response = await axios.post(
     PUTER_API_BASE,
     {
-      messages,
-      model,
-      max_tokens: 1500,
-      temperature: 0.7,
+      interface: 'puter-chat-completion',
+      driver: 'openai-completion',
+      method: 'complete',
+      args: {
+        messages,
+        model,
+        max_tokens: 1500,
+        temperature: 0.7,
+      },
+      test_mode: false,
     },
     {
       headers: {
@@ -164,15 +170,16 @@ async function callPuterAI(opts: {
     }
   );
 
-  const choice = response.data?.choices?.[0];
+  const result = response.data?.result;
+  const choice = result?.choices?.[0];
   if (!choice) {
-    console.error('Puter V2 Empty Response:', response.data);
-    throw new Error('Empty response dari Puter AI (v2)');
+    console.error('Puter Drivers Call Missing Result:', response.data);
+    throw new Error('Empty response dari Puter AI (drivers/call)');
   }
 
   return {
     reply: choice.message?.content || '',
-    tokensUsed: response.data?.usage?.total_tokens,
+    tokensUsed: result?.usage?.total_tokens,
   };
 
   return {

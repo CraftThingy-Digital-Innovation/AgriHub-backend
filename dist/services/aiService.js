@@ -12,7 +12,7 @@ const ragService_1 = require("./ragService");
 // ─── Puter.js AI Chat via REST API ────────────────────────────────────────
 // Puter.js di server-side menggunakan REST endpoint mereka
 // Docs: https://docs.puter.com/ai/
-const PUTER_API_BASE = 'https://api.puter.com/v2/chat/completions';
+const PUTER_API_BASE = 'https://api.puter.com/drivers/call';
 // Model yang direkomendasikan (hemat + kapable)
 exports.AI_MODELS = {
     default: 'gpt-4o-mini', // Hemat, cepat, bagus untuk konten pertanian
@@ -122,10 +122,16 @@ async function callPuterAI(opts) {
         throw new Error('Puter API Key (token) is missing');
     console.log(`[Puter AI] Calling model ${model} with token: ${apiKey.substring(0, 10)}... (length: ${apiKey.length})`);
     const response = await axios_1.default.post(PUTER_API_BASE, {
-        messages,
-        model,
-        max_tokens: 1500,
-        temperature: 0.7,
+        interface: 'puter-chat-completion',
+        driver: 'openai-completion',
+        method: 'complete',
+        args: {
+            messages,
+            model,
+            max_tokens: 1500,
+            temperature: 0.7,
+        },
+        test_mode: false,
     }, {
         headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -135,14 +141,15 @@ async function callPuterAI(opts) {
         },
         timeout: 45000,
     });
-    const choice = response.data?.choices?.[0];
+    const result = response.data?.result;
+    const choice = result?.choices?.[0];
     if (!choice) {
-        console.error('Puter V2 Empty Response:', response.data);
-        throw new Error('Empty response dari Puter AI (v2)');
+        console.error('Puter Drivers Call Missing Result:', response.data);
+        throw new Error('Empty response dari Puter AI (drivers/call)');
     }
     return {
         reply: choice.message?.content || '',
-        tokensUsed: response.data?.usage?.total_tokens,
+        tokensUsed: result?.usage?.total_tokens,
     };
     return {
         reply: choice.message?.content || '',
