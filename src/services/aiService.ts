@@ -42,15 +42,37 @@ export async function chatWithAI(opts: {
   message: string;
   history: ChatMessage[];
   userId: string;
+  whatsappJid?: string;
   useRag?: boolean;
   model?: string;
 }): Promise<{ reply: string; ragSources: string[]; tokensUsed?: number }> {
-  const { message, history, userId, useRag = true, model = AI_MODELS.default } = opts;
+  const { message, history: providedHistory, userId, whatsappJid, useRag = true, model = AI_MODELS.default } = opts;
 
   let ragContext = '';
   const ragSources: string[] = [];
 
-  // RAG: Ambil konteks dari dokumen user jika ada
+  // 1. Ambil history dari DB jika whatsappJid ada (untuk bot)
+  let dbHistory: ChatMessage[] = [];
+  if (whatsappJid) {
+    const rows = await db('chats')
+      .where({ whatsapp_jid: whatsappJid })
+      .orderBy('created_at', 'desc')
+      .limit(15);
+    dbHistory = rows.reverse().map(r => ({ role: r.role, content: r.content }));
+  }
+
+  // Gabungkan history (prioritas history yang dipassing manual jika ada)
+  const finalHistory = providedHistory.length > 0 ? providedHistory : dbHistory;
+
+  // 2. Cek apakah perlu summarization (Auto Compression)
+  let contextSummary = '';
+  if (finalHistory.length >= 12) {
+      // Jika history panjang, ambil yang sangat lama untuk disummarize
+      const toSummarize = finalHistory.slice(0, -6); 
+      contextSummary = await summarizeChat(toSummarize, userId);
+  }
+
+  // 3. RAG: Ambil konteks dari dokumen user jika ada
   if (useRag) {
     const chunks = await retrieveRelevantChunks({ query: message, userId, topK: 4 });
     if (chunks.length > 0) {
@@ -61,11 +83,13 @@ export async function chatWithAI(opts: {
     }
   }
 
-  const systemMsg = SYSTEM_PROMPT + ragContext;
+  const systemMsg = SYSTEM_PROMPT + 
+    (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
+    ragContext;
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemMsg },
-    ...history.slice(-10), // Keep last 10 turns untuk context
+    ...finalHistory.slice(-6), // Ambil 6 pesan terakhir sebagai context aktif
     { role: 'user', content: message },
   ];
 
@@ -88,6 +112,27 @@ export async function chatWithAI(opts: {
       ragSources: [],
     };
   }
+}
+
+async function summarizeChat(history: ChatMessage[], userId: string): Promise<string> {
+    try {
+        const user = await db('users').where({ id: userId }).select('puter_token').first();
+        if (!user || !user.puter_token) return '';
+
+        const summaryResponse = await callPuterAI({
+            apiKey: user.puter_token,
+            model: AI_MODELS.default,
+            messages: [
+                { role: 'system', content: 'Ringkas percakapan berikut dalam maksimal 3 kalimat padat yang mencakup poin-poin penting agar AI bisa melanjutkan konteksnya.' },
+                ...history,
+                { role: 'user', content: 'Tolong ringkas percakapan di atas.' }
+            ]
+        });
+        return summaryResponse.reply;
+    } catch (err) {
+        console.error('Summarization error:', err);
+        return '';
+    }
 }
 
 async function callPuterAI(opts: {

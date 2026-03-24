@@ -548,11 +548,32 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
          targetUserId = user.id;
        }
 
+       // 1. Simpan pesan user ke DB
+       await db('chats').insert({
+           id: uuidv4(),
+           user_id: user ? user.id : null,
+           whatsapp_jid: jid,
+           role: 'user',
+           content: cleanText || 'Halo!',
+           created_at: new Date().toISOString()
+       });
+
        const aiReply = await chatWithAI({
          message: cleanText || 'Halo!',
          history: [],
          userId: targetUserId,
+         whatsappJid: jid,
          useRag: true
+       });
+
+       // 2. Simpan balasan AI ke DB
+       await db('chats').insert({
+           id: uuidv4(),
+           user_id: user ? user.id : 'wa-bot',
+           whatsapp_jid: jid,
+           role: 'assistant',
+           content: aiReply.reply,
+           created_at: new Date().toISOString()
        });
 
        await sendWAMessage(jid, `🌱 ${aiReply.reply}`);

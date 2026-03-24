@@ -12,14 +12,24 @@ export async function runMigrations(): Promise<void> {
     try {
       const hasTable = await db.schema.hasTable('knex_migrations');
       if (hasTable) {
-        // Fix TS to JS
-        await db.raw("UPDATE knex_migrations SET name = REPLACE(name, '.ts', '.js') WHERE name LIKE '%.ts'");
+        const ext = process.env.NODE_ENV === 'production' ? '.js' : '.ts';
+        const otherExt = ext === '.js' ? '.ts' : '.js';
         
-        // Fix manual renames of specific files that are causing "MISSING" errors
-        await db.raw("UPDATE knex_migrations SET name = '002_add_puter_token.js' WHERE name = '20260323_add_puter_token_to_users.js'");
-        await db.raw("UPDATE knex_migrations SET name = '003_enhance_store_product_schema.js' WHERE name = '20260323_enhance_store_product_schema.js'");
+        // Sync filenames in DB with current expected extension
+        await db.raw(`UPDATE knex_migrations SET name = REPLACE(name, '${otherExt}', '${ext}') WHERE name LIKE '%${otherExt}'`);
         
-        console.log('🔧 Migration history repaired.');
+        // Fix manual renames for BOTH extensions just in case
+        const oldPrefix = '20260323_';
+        const newPrefixes = {
+          'add_puter_token_to_users': '002_add_puter_token',
+          'enhance_store_product_schema': '003_enhance_store_product_schema'
+        };
+
+        for (const [old, newName] of Object.entries(newPrefixes)) {
+           await db.raw(`UPDATE knex_migrations SET name = '${newName}${ext}' WHERE name = '${oldPrefix}${old}${ext}' OR name = '${oldPrefix}${old}${otherExt}'`);
+        }
+        
+        console.log(`🔧 Migration history repaired (Sync to ${ext}).`);
       }
     } catch (e) {
       console.warn('⚠️ Repair step failed (possibly already fixed):', (e as Error).message);
