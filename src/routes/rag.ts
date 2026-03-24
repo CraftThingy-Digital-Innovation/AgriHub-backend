@@ -4,9 +4,10 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { requireAuth, AuthRequest } from '../middleware/auth';
-import { storeDocument, getUserDocuments, deleteDocument } from '../services/ragService';
+import { storeDocument, getUserDocuments, deleteDocument, isDuplicateDocument } from '../services/ragService';
 import { parseFile, parseUrl, parseYouTube, parseText } from '../services/documentParser';
 import { chatWithAI } from '../services/aiService';
+import crypto from 'crypto';
 import db from '../config/knex';
 
 const router = Router();
@@ -50,6 +51,18 @@ router.post('/upload', requireAuth, upload.single('file'), async (req: AuthReque
     const ext = path.extname(req.file.originalname).toLowerCase();
     const sourceType = ext === '.pdf' ? 'pdf' : ['.xlsx', '.xls', '.csv'].includes(ext) ? 'xlsx' : 'text';
 
+    // ── Check Duplicate ──
+    const fileBuffer = fs.readFileSync(req.file.path);
+    const fileHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    const fileSize = fileBuffer.length;
+
+    const isDuplicate = await isDuplicateDocument(req.user!.id, title, fileHash, fileSize);
+    if (isDuplicate) {
+      fs.unlinkSync(req.file.path);
+      res.json({ success: true, message: 'Dokumen ini sudah ada di Knowledge Base Anda.', data: { is_duplicate: true } });
+      return;
+    }
+
     const content = await parseFile(req.file.path);
     if (!content || content.trim().length < 50) {
       fs.unlinkSync(req.file.path);
@@ -63,6 +76,8 @@ router.post('/upload', requireAuth, upload.single('file'), async (req: AuthReque
       sourceType,
       content,
       isGlobal: req.body.is_global === 'true' && req.user!.role === 'admin',
+      fileHash,
+      fileSize,
     });
 
     // Cleanup uploaded file setelah diproses

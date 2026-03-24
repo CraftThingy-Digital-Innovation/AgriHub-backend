@@ -12,6 +12,7 @@ const auth_1 = require("../middleware/auth");
 const ragService_1 = require("../services/ragService");
 const documentParser_1 = require("../services/documentParser");
 const aiService_1 = require("../services/aiService");
+const crypto_1 = __importDefault(require("crypto"));
 const knex_1 = __importDefault(require("../config/knex"));
 const router = (0, express_1.Router)();
 // ─── Upload directory setup ────────────────────────────────────────────────
@@ -57,6 +58,16 @@ router.post('/upload', auth_1.requireAuth, upload.single('file'), async (req, re
         const title = req.body.title || req.file.originalname;
         const ext = path_1.default.extname(req.file.originalname).toLowerCase();
         const sourceType = ext === '.pdf' ? 'pdf' : ['.xlsx', '.xls', '.csv'].includes(ext) ? 'xlsx' : 'text';
+        // ── Check Duplicate ──
+        const fileBuffer = fs_1.default.readFileSync(req.file.path);
+        const fileHash = crypto_1.default.createHash('md5').update(fileBuffer).digest('hex');
+        const fileSize = fileBuffer.length;
+        const isDuplicate = await (0, ragService_1.isDuplicateDocument)(req.user.id, title, fileHash, fileSize);
+        if (isDuplicate) {
+            fs_1.default.unlinkSync(req.file.path);
+            res.json({ success: true, message: 'Dokumen ini sudah ada di Knowledge Base Anda.', data: { is_duplicate: true } });
+            return;
+        }
         const content = await (0, documentParser_1.parseFile)(req.file.path);
         if (!content || content.trim().length < 50) {
             fs_1.default.unlinkSync(req.file.path);
@@ -69,6 +80,8 @@ router.post('/upload', auth_1.requireAuth, upload.single('file'), async (req, re
             sourceType,
             content,
             isGlobal: req.body.is_global === 'true' && req.user.role === 'admin',
+            fileHash,
+            fileSize,
         });
         // Cleanup uploaded file setelah diproses
         fs_1.default.unlinkSync(req.file.path);

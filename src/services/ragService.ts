@@ -63,8 +63,10 @@ export async function storeDocument(opts: {
   sourceUrl?: string;
   content: string;
   isGlobal?: boolean;
+  fileHash?: string;
+  fileSize?: number;
 }): Promise<string> {
-  const { userId, title, sourceType, sourceUrl, content, isGlobal } = opts;
+  const { userId, title, sourceType, sourceUrl, content, isGlobal, fileHash, fileSize } = opts;
   const chunks = chunkText(content);
 
   const docId = uuidv4();
@@ -79,6 +81,8 @@ export async function storeDocument(opts: {
     content_preview: content.slice(0, 300),
     chunk_count: chunks.length,
     is_global: isGlobal ? 1 : 0,
+    file_hash: fileHash || null,
+    file_size: fileSize || null,
     created_at: now,
     updated_at: now,
   });
@@ -174,3 +178,16 @@ export async function deleteDocument(docId: string, userId: string): Promise<boo
   await db('rag_documents').where({ id: docId }).del();
   return true;
 }
+
+export async function isDuplicateDocument(userId: string, title: string, fileHash: string, fileSize: number): Promise<boolean> {
+  const existing = await db('rag_documents')
+    .where({ 
+      user_id: userId, 
+      title, 
+      file_hash: fileHash, 
+      file_size: fileSize 
+    })
+    .first();
+  return !!existing;
+}
+

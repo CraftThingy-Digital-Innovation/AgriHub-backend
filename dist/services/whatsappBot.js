@@ -130,13 +130,13 @@ async function useDatabaseAuthState() {
         }
     };
 }
-// ─── Connect ke WhatsApp ──────────────────────────────────────────────────
 const baileys_2 = require("baileys");
 const documentParser_1 = require("./documentParser");
 const ragService_1 = require("./ragService");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const os_1 = __importDefault(require("os"));
+const crypto_1 = __importDefault(require("crypto"));
 // ─── Ensure System Users ────────────────────────────────────────────────
 async function ensureSystemUsers() {
     const botId = 'wa-bot';
@@ -313,6 +313,15 @@ async function handleDocumentUpload(msg, doc) {
         await sendWAMessage(jid, `⏳ Sedang mempelajari dokumen: *${fileName}*...`);
         // 2. Download media
         const buffer = await (0, baileys_2.downloadMediaMessage)(msg, 'buffer', {});
+        // 2.1 Check Duplicate (Hash + Size + Name)
+        const fileHash = crypto_1.default.createHash('md5').update(buffer).digest('hex');
+        const fileSize = buffer.length;
+        const isDuplicate = await (0, ragService_1.isDuplicateDocument)(ownerId, fileName, fileHash, fileSize);
+        if (isDuplicate) {
+            console.log(`♻️ Duplicate document detected: ${fileName} (${fileHash})`);
+            await sendWAMessage(jid, `ℹ️ Dokumen *${fileName}* sudah ada di Knowledge Base saya dan tidak perlu dipelajari lagi. Silakan langsung ajukan pertanyaan! 😊`);
+            return;
+        }
         // 3. Simpan ke temp file agar bisa di-parse
         const tempDir = os_1.default.tmpdir();
         const tempPath = path_1.default.join(tempDir, `wa_${(0, uuid_1.v4)()}_${fileName}`);
@@ -326,7 +335,9 @@ async function handleDocumentUpload(msg, doc) {
                 title: fileName,
                 sourceType: mimeType === 'application/pdf' ? 'pdf' : 'text',
                 content: content,
-                isGlobal: false
+                isGlobal: false,
+                fileHash,
+                fileSize
             });
             await sendWAMessage(jid, `✅ *Berhasil!* Saya sudah selesai mempelajari dokumen *${fileName}*.\n\nSekarang Anda bisa bertanya apapun tentang isinya, saya akan otomatis mencari jawabannya di sana! 💡🤖`);
         }

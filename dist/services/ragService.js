@@ -8,6 +8,7 @@ exports.storeDocument = storeDocument;
 exports.retrieveRelevantChunks = retrieveRelevantChunks;
 exports.getUserDocuments = getUserDocuments;
 exports.deleteDocument = deleteDocument;
+exports.isDuplicateDocument = isDuplicateDocument;
 const knex_1 = __importDefault(require("../config/knex"));
 const uuid_1 = require("uuid");
 // ─── Simple cosine similarity for in-DB embedding retrieval ──────────────
@@ -60,7 +61,7 @@ function chunkText(text, chunkSize = 800, overlap = 100) {
 }
 // ─── Store document chunks with embeddings ───────────────────────────────
 async function storeDocument(opts) {
-    const { userId, title, sourceType, sourceUrl, content, isGlobal } = opts;
+    const { userId, title, sourceType, sourceUrl, content, isGlobal, fileHash, fileSize } = opts;
     const chunks = chunkText(content);
     const docId = (0, uuid_1.v4)();
     const now = new Date().toISOString();
@@ -73,6 +74,8 @@ async function storeDocument(opts) {
         content_preview: content.slice(0, 300),
         chunk_count: chunks.length,
         is_global: isGlobal ? 1 : 0,
+        file_hash: fileHash || null,
+        file_size: fileSize || null,
         created_at: now,
         updated_at: now,
     });
@@ -149,5 +152,16 @@ async function deleteDocument(docId, userId) {
     await (0, knex_1.default)('rag_chunks').where({ document_id: docId }).del();
     await (0, knex_1.default)('rag_documents').where({ id: docId }).del();
     return true;
+}
+async function isDuplicateDocument(userId, title, fileHash, fileSize) {
+    const existing = await (0, knex_1.default)('rag_documents')
+        .where({
+        user_id: userId,
+        title,
+        file_hash: fileHash,
+        file_size: fileSize
+    })
+        .first();
+    return !!existing;
 }
 //# sourceMappingURL=ragService.js.map

@@ -110,13 +110,13 @@ async function useDatabaseAuthState(): Promise<{ state: AuthenticationState, sav
   };
 }
 
-// ─── Connect ke WhatsApp ──────────────────────────────────────────────────
 import { downloadMediaMessage } from 'baileys';
 import { parseFile } from './documentParser';
-import { storeDocument } from './ragService';
+import { storeDocument, isDuplicateDocument } from './ragService';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 
 // ─── Ensure System Users ────────────────────────────────────────────────
 async function ensureSystemUsers() {
@@ -315,6 +315,17 @@ async function handleDocumentUpload(msg: any, doc: any) {
     // 2. Download media
     const buffer = await downloadMediaMessage(msg, 'buffer', {});
     
+    // 2.1 Check Duplicate (Hash + Size + Name)
+    const fileHash = crypto.createHash('md5').update(buffer as Buffer).digest('hex');
+    const fileSize = (buffer as Buffer).length;
+    
+    const isDuplicate = await isDuplicateDocument(ownerId, fileName, fileHash, fileSize);
+    if (isDuplicate) {
+        console.log(`♻️ Duplicate document detected: ${fileName} (${fileHash})`);
+        await sendWAMessage(jid, `ℹ️ Dokumen *${fileName}* sudah ada di Knowledge Base saya dan tidak perlu dipelajari lagi. Silakan langsung ajukan pertanyaan! 😊`);
+        return;
+    }
+
     // 3. Simpan ke temp file agar bisa di-parse
     const tempDir = os.tmpdir();
     const tempPath = path.join(tempDir, `wa_${uuidv4()}_${fileName}`);
@@ -330,7 +341,9 @@ async function handleDocumentUpload(msg: any, doc: any) {
           title: fileName,
           sourceType: mimeType === 'application/pdf' ? 'pdf' : 'text',
           content: content,
-          isGlobal: false
+          isGlobal: false,
+          fileHash,
+          fileSize
         });
 
         await sendWAMessage(jid, `✅ *Berhasil!* Saya sudah selesai mempelajari dokumen *${fileName}*.\n\nSekarang Anda bisa bertanya apapun tentang isinya, saya akan otomatis mencari jawabannya di sana! 💡🤖`);
