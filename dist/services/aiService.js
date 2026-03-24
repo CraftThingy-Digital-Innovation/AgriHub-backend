@@ -9,6 +9,7 @@ exports.checkGroupCredit = checkGroupCredit;
 exports.deductGroupCredit = deductGroupCredit;
 const puter_js_1 = __importDefault(require("@heyputer/puter.js"));
 const ragService_1 = require("./ragService");
+const priceService_1 = require("./priceService");
 // ─── Puter.js AI Chat via Official SDK ───────────────────────────────────
 // Docs: https://docs.puter.com/AI/chat/
 // Model yang direkomendasikan (hemat + kapable)
@@ -86,8 +87,11 @@ async function chatWithAI(opts) {
             ragSources.push(...chunks.map(c => c.docTitle));
         }
     }
+    // 4. PRICE GROUNDING: Ambil data harga real-time (Bapanas/BPS)
+    const priceContext = await (0, priceService_1.searchCommodityPrices)(message);
     const systemMsg = SYSTEM_PROMPT +
         (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
+        (priceContext ? `\n\n=== HARGA REAL-TIME (GROUNDING) ===\n${priceContext}\n` : '') +
         ragContext;
     const messages = [
         { role: 'system', content: systemMsg },

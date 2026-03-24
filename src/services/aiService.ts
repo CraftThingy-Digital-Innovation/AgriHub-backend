@@ -1,5 +1,6 @@
 import puter from '@heyputer/puter.js';
 import { retrieveRelevantChunks } from './ragService';
+import { searchCommodityPrices } from './priceService';
 
 // ─── Puter.js AI Chat via Official SDK ───────────────────────────────────
 // Docs: https://docs.puter.com/AI/chat/
@@ -103,8 +104,13 @@ export async function chatWithAI(opts: {
     }
   }
 
+  // 4. PRICE GROUNDING: Ambil data harga real-time (Bapanas/BPS)
+  const priceContext = await searchCommodityPrices(message);
+
+
   const systemMsg = SYSTEM_PROMPT + 
     (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
+    (priceContext ? `\n\n=== HARGA REAL-TIME (GROUNDING) ===\n${priceContext}\n` : '') +
     ragContext;
 
   const messages: ChatMessage[] = [
