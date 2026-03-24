@@ -173,7 +173,7 @@ async function connectWhatsApp() {
     }
     const { state, saveCreds } = await useDatabaseAuthState();
     const { version } = await (0, baileys_1.fetchLatestBaileysVersion)();
-    console.log('🚀 Connecting to WhatsApp with Baileys v' + version.join('.'));
+    console.log(`🚀 [PID:${process.pid}] Connecting to WhatsApp with Baileys v${version.join('.')}`);
     waSocket = (0, baileys_1.default)({
         version,
         auth: state,
@@ -193,16 +193,21 @@ async function connectWhatsApp() {
             isConnecting = false;
             const reason = lastDisconnect?.error?.output?.statusCode;
             const shouldReconnect = reason !== baileys_1.DisconnectReason.loggedOut;
-            console.log('WA disconnected, reason:', reason, 'reconnecting:', shouldReconnect);
+            console.log(`WA disconnected [PID:${process.pid}], reason:`, reason, 'reconnecting:', shouldReconnect);
             if (shouldReconnect) {
-                // Add randomized delay to avoid flooding and 440 conflict
-                const delay = 3000 + Math.random() * 5000;
+                // Special Handling for 440 Conflict (Stream Replacement)
+                // Usually means another instance is running. We wait longer (30-60s) to "cool down".
+                let delay = 3000 + Math.random() * 5000;
+                if (reason === 440) {
+                    console.warn('⚠️  CONFLIK (440) Detected! Waiting 30s to allow other instances to clear...');
+                    delay = 30000 + Math.random() * 10000;
+                }
                 console.log(`⏳ Reconnecting in ${Math.round(delay)}ms...`);
                 setTimeout(() => connectWhatsApp(), delay);
             }
             else {
                 console.log('🧹 Logging out, clearing database session...');
-                (0, knex_1.default)('whatsapp_auth').delete().catch(e => console.error('Gagal hapus session:', e));
+                (0, knex_1.default)('whatsapp_auth').where({ category: 'creds', key_id: 'main' }).delete().catch(e => console.error('Gagal hapus session:', e));
             }
         }
         else if (connection === 'open') {

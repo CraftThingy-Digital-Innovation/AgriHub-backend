@@ -158,7 +158,7 @@ export async function connectWhatsApp(): Promise<void> {
   const { state, saveCreds } = await useDatabaseAuthState();
   const { version } = await fetchLatestBaileysVersion();
 
-  console.log('🚀 Connecting to WhatsApp with Baileys v' + version.join('.'));
+  console.log(`🚀 [PID:${process.pid}] Connecting to WhatsApp with Baileys v${version.join('.')}`);
 
   waSocket = makeWASocket({
     version,
@@ -184,16 +184,22 @@ export async function connectWhatsApp(): Promise<void> {
       const reason = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const shouldReconnect = reason !== DisconnectReason.loggedOut;
       
-      console.log('WA disconnected, reason:', reason, 'reconnecting:', shouldReconnect);
+      console.log(`WA disconnected [PID:${process.pid}], reason:`, reason, 'reconnecting:', shouldReconnect);
       
       if (shouldReconnect) {
-        // Add randomized delay to avoid flooding and 440 conflict
-        const delay = 3000 + Math.random() * 5000;
+        // Special Handling for 440 Conflict (Stream Replacement)
+        // Usually means another instance is running. We wait longer (30-60s) to "cool down".
+        let delay = 3000 + Math.random() * 5000;
+        if (reason === 440) {
+            console.warn('⚠️  CONFLIK (440) Detected! Waiting 30s to allow other instances to clear...');
+            delay = 30000 + Math.random() * 10000;
+        }
+
         console.log(`⏳ Reconnecting in ${Math.round(delay)}ms...`);
         setTimeout(() => connectWhatsApp(), delay);
       } else {
         console.log('🧹 Logging out, clearing database session...');
-        db('whatsapp_auth').delete().catch(e => console.error('Gagal hapus session:', e));
+        db('whatsapp_auth').where({ category: 'creds', key_id: 'main' }).delete().catch(e => console.error('Gagal hapus session:', e));
       }
     } else if (connection === 'open') {
       isConnected = true;
