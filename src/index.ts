@@ -29,6 +29,8 @@ const PORT = process.env.PORT || 3000;
 // ── Security Middleware ──────────────────────────────────────────────────
 app.use(helmet({ 
   contentSecurityPolicy: false,
+  crossOriginOpenerPolicy: { policy: 'unsafe-none' }, // Diperlukan agar popup Puter.js bisa bicara ke parent
+  crossOriginEmbedderPolicy: false,
   referrerPolicy: { policy: 'no-referrer-when-downgrade' }
 }));
 app.use(cors({
