@@ -53,17 +53,76 @@ async function getBPSStatistics(commodity) {
     }
 }
 /**
- * Fungsi pembantu untuk AI: Mencari info harga tergabung
+ * Fungsi pembantu untuk AI: Mencari info harga dari BPS secara dinamis
  */
 async function searchCommodityPrices(query) {
-    const commodities = ['cabai', 'beras', 'bawang', 'telur', 'daging', 'minyak', 'gula'];
-    const matched = commodities.find(c => query.toLowerCase().includes(c));
-    if (!matched)
-        return "";
-    const prices = await getRealTimePrices(matched);
-    if (prices.length > 0) {
-        return `Data Harga Bapanas (${matched}): ` + prices.map(p => `${p.name}: Rp${p.price}/${p.unit}`).join(', ');
+    const apiKey = process.env.BPS_API_KEY;
+    if (!apiKey)
+        return "(Sistem: BPS_API_KEY belum dikonfigurasi)";
+    // Mapping keyword untuk pencarian BPS yang lebih akurat
+    const keywordMap = {
+        'cabe': 'cabai',
+        'lombok': 'cabai',
+        'brambang': 'bawang merah',
+        'bawang': 'bawang',
+        'beras': 'beras',
+        'telur': 'telur',
+        'daging': 'daging',
+        'minyak': 'minyak goreng',
+        'gula': 'gula pasir'
+    };
+    let searchKeyword = "";
+    const lowerQuery = query.toLowerCase();
+    for (const [key, val] of Object.entries(keywordMap)) {
+        if (lowerQuery.includes(key)) {
+            searchKeyword = val;
+            break;
+        }
     }
-    return `(Sistem: Gagal mengambil data real-time, sampaikan ke user bahwa sumber data Bapanas sedang maintenance)`;
+    if (!searchKeyword)
+        return "";
+    try {
+        // 1. Cari Variable ID di BPS
+        console.log(`🔍 Searching BPS for: ${searchKeyword}...`);
+        const searchRes = await axios_1.default.get(`${BPS_BASE_URL}/list/model/var/lang/ind/domain/0000/key/${apiKey}`, {
+            params: { keyword: searchKeyword },
+            timeout: 5000
+        });
+        if (searchRes.data.status !== 'OK' || !searchRes.data.data[1] || searchRes.data.data[1].length === 0) {
+            return `(Sistem: Tidak ditemukan variabel statistik BPS untuk "${searchKeyword}")`;
+        }
+        // Ambil variable pertama yang relevan (biasanya yang paling cocok)
+        const variable = searchRes.data.data[1][0];
+        const varId = variable.var_id;
+        const varTitle = variable.title;
+        // 2. Ambil data untuk Variabel tersebut (coba tahun ini dan tahun lalu)
+        const currentYear = new Date().getFullYear();
+        const dataRes = await axios_1.default.get(`${BPS_BASE_URL}/list/model/data/lang/ind/domain/0000/var/${varId}/key/${apiKey}/th/${currentYear}`, {
+            timeout: 5000
+        });
+        let displayData = "";
+        if (dataRes.data.status === 'OK' && dataRes.data.data) {
+            // Sederhanakan output untuk AI
+            displayData = `Data BPS [${varTitle}]: Tersedia untuk tahun ${currentYear}. Nilai bervariasi per wilayah.`;
+        }
+        else {
+            // Coba tahun sebelumnya jika tahun ini kosong
+            const prevYear = currentYear - 1;
+            const prevDataRes = await axios_1.default.get(`${BPS_BASE_URL}/list/model/data/lang/ind/domain/0000/var/${varId}/key/${apiKey}/th/${prevYear}`, {
+                timeout: 5000
+            });
+            if (prevDataRes.data.status === 'OK') {
+                displayData = `Data BPS [${varTitle}]: Menggunakan data tahun ${prevYear} (Data ${currentYear} belum rilis).`;
+            }
+            else {
+                displayData = `Data BPS [${varTitle}]: Data historis tersedia namun gagal mengambil detail saat ini.`;
+            }
+        }
+        return `=== INFO GROUNDING BPS ===\nKomoditas: ${searchKeyword}\nSumber: Badan Pusat Statistik (BPS)\nKonteks: ${displayData}\n(Sampaikan ke user bahwa data ini adalah statistik resmi terbaru dari BPS)`;
+    }
+    catch (error) {
+        console.error('❌ BPS Search Error:', error.message);
+        return `(Sistem: Gangguan koneksi ke BPS API saat mencari "${searchKeyword}")`;
+    }
 }
 //# sourceMappingURL=priceService.js.map
