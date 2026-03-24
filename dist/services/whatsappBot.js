@@ -454,10 +454,25 @@ async function handleMessage(msg) {
                     pendingAssignments.delete(jid + sender);
                     return;
                 }
-                await (0, knex_1.default)('group_credits').where({ group_jid: jid }).update({
-                    owner_id: pending.userId,
-                    updated_at: new Date().toISOString()
-                });
+                // Gunakan UPSERT: Update jika ada, Insert jika belum ada (antisipasi bot sudah ada di grup sebelum fitur ini)
+                const existingGroup = await (0, knex_1.default)('group_credits').where({ group_jid: jid }).first();
+                if (existingGroup) {
+                    await (0, knex_1.default)('group_credits').where({ id: existingGroup.id }).update({
+                        owner_id: pending.userId,
+                        updated_at: new Date().toISOString()
+                    });
+                }
+                else {
+                    await (0, knex_1.default)('group_credits').insert({
+                        id: (0, uuid_1.v4)(),
+                        group_jid: jid,
+                        owner_id: pending.userId,
+                        credits_balance: 5.0, // Bonus awal
+                        is_ai_enabled: true,
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    });
+                }
                 pendingAssignments.delete(jid + sender);
                 const freshUser = await (0, knex_1.default)('users').where({ id: pending.userId }).first();
                 let msgText = `✅ *Berhasil!* Anda sekarang adalah penanggung jawab resmi untuk AI di grup ini.`;
@@ -475,6 +490,18 @@ async function handleMessage(msg) {
             if (isGroup) {
                 const groupMeta = await (0, knex_1.default)('group_credits').where({ group_jid: jid }).first();
                 if (!groupMeta || !groupMeta.owner_id) {
+                    // Jika record belum ada sama sekali, buatkan record kosong (tanpa owner) dulu
+                    if (!groupMeta) {
+                        await (0, knex_1.default)('group_credits').insert({
+                            id: (0, uuid_1.v4)(),
+                            group_jid: jid,
+                            owner_id: null,
+                            credits_balance: 5.0,
+                            is_ai_enabled: true,
+                            created_at: new Date().toISOString(),
+                            updated_at: new Date().toISOString()
+                        });
+                    }
                     if (isMentioned) {
                         if (!user) {
                             const isRealPhone = sender.endsWith('@s.whatsapp.net');

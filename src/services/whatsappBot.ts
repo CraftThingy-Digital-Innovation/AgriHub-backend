@@ -461,10 +461,24 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
                 return;
             }
             
-            await db('group_credits').where({ group_jid: jid }).update({ 
-                owner_id: pending.userId,
-                updated_at: new Date().toISOString()
-            });
+            // Gunakan UPSERT: Update jika ada, Insert jika belum ada (antisipasi bot sudah ada di grup sebelum fitur ini)
+            const existingGroup = await db('group_credits').where({ group_jid: jid }).first();
+            if (existingGroup) {
+                await db('group_credits').where({ id: existingGroup.id }).update({ 
+                    owner_id: pending.userId,
+                    updated_at: new Date().toISOString()
+                });
+            } else {
+                await db('group_credits').insert({
+                    id: uuidv4(),
+                    group_jid: jid,
+                    owner_id: pending.userId,
+                    credits_balance: 5.0, // Bonus awal
+                    is_ai_enabled: true,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                });
+            }
 
             pendingAssignments.delete(jid + sender);
             
@@ -487,7 +501,20 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
        
        if (isGroup) {
          const groupMeta = await db('group_credits').where({ group_jid: jid }).first();
-         if (!groupMeta || !groupMeta.owner_id) {
+          if (!groupMeta || !groupMeta.owner_id) {
+            // Jika record belum ada sama sekali, buatkan record kosong (tanpa owner) dulu
+            if (!groupMeta) {
+                await db('group_credits').insert({
+                    id: uuidv4(),
+                    group_jid: jid,
+                    owner_id: null,
+                    credits_balance: 5.0,
+                    is_ai_enabled: true,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                });
+            }
+
             if (isMentioned) {
                 if (!user) {
                     const isRealPhone = sender.endsWith('@s.whatsapp.net');
