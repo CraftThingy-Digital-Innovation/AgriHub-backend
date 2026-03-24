@@ -155,10 +155,45 @@ export async function connectWhatsApp(): Promise<void> {
     }
   }
 
+  // ─── Global Mutex (DB Lock) ─────────────────────────────
+  const lockKey = 'whatsapp_bot_main';
+  const nowUnix = Math.floor(Date.now() / 1000);
+  
+  // Clean up old locks (> 30s)
+  await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).where('updated_at', '<', new Date(Date.now() - 30000).toISOString()).delete();
+  
+  const existingLock = await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
+  if (existingLock) {
+      const lockData = JSON.parse(existingLock.data);
+      if (lockData.pid !== process.pid) {
+          console.log(`⏳ [WA] Connection LOCKED by PID ${lockData.pid}. Waiting 30s...`);
+          setTimeout(() => connectWhatsApp(), 30000);
+          return;
+      }
+  }
+
+  // Upsert Lock
+  const lockData = JSON.stringify({ pid: process.pid, startTime: nowUnix });
+  const lockExists = await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
+  if (lockExists) {
+      await db('whatsapp_auth').where({ id: lockExists.id }).update({ data: lockData, updated_at: new Date().toISOString() });
+  } else {
+      await db('whatsapp_auth').insert({ id: uuidv4(), category: 'lock', key_id: lockKey, data: lockData });
+  }
+
+  // Heartbeat interval (maintain lock every 15s)
+  const heartbeatId = setInterval(async () => {
+      if (!isConnecting && !isConnected) {
+          clearInterval(heartbeatId);
+          return;
+      }
+      await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).update({ updated_at: new Date().toISOString() });
+  }, 15000);
+
   const { state, saveCreds } = await useDatabaseAuthState();
   const { version } = await fetchLatestBaileysVersion();
 
-  console.log(`🚀 [PID:${process.pid}] Connecting to WhatsApp with Baileys v${version.join('.')}`);
+  console.log(`🚀 [PID:${process.pid}] Connecting...`);
 
   waSocket = makeWASocket({
     version,
@@ -405,8 +440,15 @@ export function getWAStatus() {
 }
 
 export async function sendWAMessage(jid: string, text: string): Promise<void> {
-  if (!waSocket || !isConnected) return;
-  await waSocket.sendMessage(jid, { text });
+  if (!waSocket || !isConnected) {
+    console.warn(`⚠️ [WA] Cannot send message to ${jid}: Bot NOT CONNECTED.`);
+    return;
+  }
+  try {
+    await waSocket.sendMessage(jid, { text });
+  } catch (err) {
+    console.error(`❌ [WA] Failed to send message to ${jid}:`, err);
+  }
 }
 
 // ─── Message Handler Logic ──────────────────────────────────────────────
