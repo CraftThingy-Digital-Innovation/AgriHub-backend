@@ -65,8 +65,9 @@ export async function storeDocument(opts: {
   isGlobal?: boolean;
   fileHash?: string;
   fileSize?: number;
+  originalFilename?: string;
 }): Promise<string> {
-  const { userId, title, sourceType, sourceUrl, content, isGlobal, fileHash, fileSize } = opts;
+  const { userId, title, sourceType, sourceUrl, content, isGlobal, fileHash, fileSize, originalFilename } = opts;
   const chunks = chunkText(content);
 
   const docId = uuidv4();
@@ -83,6 +84,7 @@ export async function storeDocument(opts: {
     is_global: isGlobal ? 1 : 0,
     file_hash: fileHash || null,
     file_size: fileSize || null,
+    original_filename: originalFilename || null,
     created_at: now,
     updated_at: now,
   });
@@ -112,7 +114,7 @@ export async function retrieveRelevantChunks(opts: {
   query: string;
   userId: string;
   topK?: number;
-}): Promise<{ content: string; score: number; docTitle: string }[]> {
+}): Promise<{ content: string; score: number; docTitle: string; originalFilename?: string }[]> {
   const { query, userId, topK = 5 } = opts;
 
   // Get all accessible chunks (user's own + global)
@@ -125,18 +127,19 @@ export async function retrieveRelevantChunks(opts: {
     .select(
       'rag_chunks.content',
       'rag_chunks.embedding',
-      'rag_documents.title as docTitle'
+      'rag_documents.title as docTitle',
+      'rag_documents.original_filename as originalFilename'
     );
 
   if (chunks.length === 0) return [];
 
   // Build shared vocab from all chunk contents + query
-  const allTexts = chunks.map((c: {content: string}) => c.content).concat([query]);
+  const allTexts = chunks.map((c: any) => c.content).concat([query]);
   const vocab = buildVocab(allTexts);
   const queryVec = textToVector(query, vocab);
 
   // Score each chunk
-  const scored = chunks.map((chunk: {content: string; embedding: string; docTitle: string}) => {
+  const scored = chunks.map((chunk: any) => {
     let chunkVec: number[];
     try {
       chunkVec = JSON.parse(chunk.embedding);
@@ -151,13 +154,14 @@ export async function retrieveRelevantChunks(opts: {
       content: chunk.content,
       score: cosineSimilarity(queryVec, chunkVec),
       docTitle: chunk.docTitle,
+      originalFilename: chunk.originalFilename,
     };
   });
 
   return scored
-    .sort((a: {score: number}, b: {score: number}) => b.score - a.score)
+    .sort((a: any, b: any) => b.score - a.score)
     .slice(0, topK)
-    .filter((c: {score: number}) => c.score > 0.01);
+    .filter((c: any) => c.score > 0.01);
 }
 
 // ─── Get documents for a user ─────────────────────────────────────────────
@@ -168,7 +172,7 @@ export async function getUserDocuments(userId: string) {
       this.where({ user_id: userId }).orWhere({ is_global: 1 });
     })
     .orderBy('created_at', 'desc')
-    .select('id', 'title', 'source_type', 'chunk_count', 'is_global', 'content_preview', 'created_at');
+    .select('id', 'title', 'original_filename', 'source_type', 'chunk_count', 'is_global', 'content_preview', 'created_at');
 }
 
 export async function deleteDocument(docId: string, userId: string): Promise<boolean> {
@@ -190,4 +194,3 @@ export async function isDuplicateDocument(userId: string, title: string, fileHas
     .first();
   return !!existing;
 }
-

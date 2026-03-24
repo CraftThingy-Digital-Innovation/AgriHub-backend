@@ -78,6 +78,7 @@ router.post('/upload', requireAuth, upload.single('file'), async (req: AuthReque
       isGlobal: req.body.is_global === 'true' && req.user!.role === 'admin',
       fileHash,
       fileSize,
+      originalFilename: req.file.originalname,
     });
 
     // Cleanup uploaded file setelah diproses

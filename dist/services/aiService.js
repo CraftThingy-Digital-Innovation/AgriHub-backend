@@ -41,6 +41,8 @@ const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub I
 
   **ATURAN EMAS**: Jika data API (DATA TERBARU) tersedia untuk komoditas yang ditanyakan, MAKA KAMU HARUS MENGABAIKAN data harga dari buku/dokumen lama (seperti statistik 2024/2025). Jangan biarkan user bingung dengan data kadaluarsa. Jelaskan bahwa data yang kamu berikan adalah data terbaru dari BPS.
 
+  **PENTING: JANGAN PERNAH MENGATAKAN KAMU TIDAK PUNYA AKSES API.** Kamu MEMILIKI akses ke API BPS secara real-time. Jika data tidak muncul di konteks, katakan bahwa data untuk komoditas tersebut sedang tidak tersedia di sistem BPS saat ini, tapi jangan pernah berbohong bahwa kamu tidak punya akses teknis.
+
   Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan singkat, jelas, dan praktis.`;
 // ─── Main chat function ────────────────────────────────────────────────────
 async function chatWithAI(opts) {
@@ -102,7 +104,7 @@ async function chatWithAI(opts) {
         }
         else if (chunks.length > 0) {
             ragContext = '\n\n=== INFORMASI DARI DOKUMEN PENGETAHUAN (ARSIP) ===\n' +
-                chunks.map(c => `[${c.docTitle}]\n${c.content}`).join('\n\n') +
+                chunks.map(c => `[SUMBER: ${c.docTitle}${c.originalFilename ? ` | FILE: ${c.originalFilename}` : ''}]\n${c.content}`).join('\n\n') +
                 '\n=== AKHIR DOKUMEN ===\n';
             ragSources.push(...chunks.map(c => c.docTitle));
         }

@@ -61,7 +61,7 @@ function chunkText(text, chunkSize = 800, overlap = 100) {
 }
 // ─── Store document chunks with embeddings ───────────────────────────────
 async function storeDocument(opts) {
-    const { userId, title, sourceType, sourceUrl, content, isGlobal, fileHash, fileSize } = opts;
+    const { userId, title, sourceType, sourceUrl, content, isGlobal, fileHash, fileSize, originalFilename } = opts;
     const chunks = chunkText(content);
     const docId = (0, uuid_1.v4)();
     const now = new Date().toISOString();
@@ -76,6 +76,7 @@ async function storeDocument(opts) {
         is_global: isGlobal ? 1 : 0,
         file_hash: fileHash || null,
         file_size: fileSize || null,
+        original_filename: originalFilename || null,
         created_at: now,
         updated_at: now,
     });
@@ -105,7 +106,7 @@ async function retrieveRelevantChunks(opts) {
         this.where('rag_documents.user_id', userId)
             .orWhere('rag_documents.is_global', 1);
     })
-        .select('rag_chunks.content', 'rag_chunks.embedding', 'rag_documents.title as docTitle');
+        .select('rag_chunks.content', 'rag_chunks.embedding', 'rag_documents.title as docTitle', 'rag_documents.original_filename as originalFilename');
     if (chunks.length === 0)
         return [];
     // Build shared vocab from all chunk contents + query
@@ -129,6 +130,7 @@ async function retrieveRelevantChunks(opts) {
             content: chunk.content,
             score: cosineSimilarity(queryVec, chunkVec),
             docTitle: chunk.docTitle,
+            originalFilename: chunk.originalFilename,
         };
     });
     return scored
@@ -143,7 +145,7 @@ async function getUserDocuments(userId) {
         this.where({ user_id: userId }).orWhere({ is_global: 1 });
     })
         .orderBy('created_at', 'desc')
-        .select('id', 'title', 'source_type', 'chunk_count', 'is_global', 'content_preview', 'created_at');
+        .select('id', 'title', 'original_filename', 'source_type', 'chunk_count', 'is_global', 'content_preview', 'created_at');
 }
 async function deleteDocument(docId, userId) {
     const doc = await (0, knex_1.default)('rag_documents').where({ id: docId, user_id: userId }).first();
