@@ -10,6 +10,8 @@ exports.deductGroupCredit = deductGroupCredit;
 const puter_js_1 = __importDefault(require("@heyputer/puter.js"));
 const ragService_1 = require("./ragService");
 const priceService_1 = require("./priceService");
+const documentParser_1 = require("./documentParser");
+const knex_1 = __importDefault(require("../config/knex"));
 // ─── Puter.js AI Chat via Official SDK ───────────────────────────────────
 // Docs: https://docs.puter.com/AI/chat/
 // Model via Puter — sesuai agri-hub-plan section 13 AI COST
@@ -65,8 +67,25 @@ async function chatWithAI(opts) {
         const toSummarize = finalHistory.slice(0, -6);
         contextSummary = await summarizeChat(toSummarize, userId);
     }
-    // 3. RAG: Ambil konteks dari dokumen user jika ada
+    // 3. RAG: Ambil konteks dari dokumen user atau URL jika ada
     if (useRag) {
+        // 3.1 Deteksi & Scrape URL jika ada di pesan
+        const urlRegex = /(https?:\/\/[^\s]+)/gi;
+        const foundUrls = message.match(urlRegex);
+        if (foundUrls && foundUrls.length > 0) {
+            console.log(`🔗 [AI] Detected ${foundUrls.length} URL(s) to scrape...`);
+            for (const url of foundUrls) {
+                try {
+                    const webContent = await (0, documentParser_1.parseUrl)(url);
+                    ragContext += `\n\n=== ISI WEBSITE: ${url} ===\n${webContent}\n=== AKHIR WEBSITE ===\n`;
+                    ragSources.push(url);
+                }
+                catch (err) {
+                    console.warn(`⚠️ [AI] Gagal scrape URL: ${url}`, err.message);
+                }
+            }
+        }
+        // 3.2 Pencarian RAG (Vector Search)
         let chunks = await (0, ragService_1.retrieveRelevantChunks)({ query: message, userId, topK: 4 });
         // Fallback: Jika pertanyaan sangat pendek/vague (seperti "apa isinya") dan chunks kosong,
         // ambil dokumen terbaru sebagai konteks umum.
@@ -203,7 +222,6 @@ function generateFallbackReply(message) {
     return '🌱 Halo! Saya AsistenTani AgriHub. Saya bisa membantu Anda dengan:\n• Budidaya tanaman (cabai, padi, sayuran, buah)\n• Pengendalian hama & penyakit\n• Harga pasar & perkiraan tren\n• Cara menggunakan fitur AgriHub\n\nSilakan tanyakan sesuatu, ya!';
 }
 // ─── Group Credit Checker ─────────────────────────────────────────────────
-const knex_1 = __importDefault(require("../config/knex"));
 async function checkGroupCredit(groupJid) {
     const group = await (0, knex_1.default)('group_credits').where({ group_jid: groupJid }).first();
     if (!group)

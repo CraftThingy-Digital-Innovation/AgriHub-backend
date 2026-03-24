@@ -1,6 +1,8 @@
 import puter from '@heyputer/puter.js';
 import { retrieveRelevantChunks } from './ragService';
 import { searchCommodityPrices } from './priceService';
+import { parseUrl } from './documentParser';
+import db from '../config/knex';
 
 // ─── Puter.js AI Chat via Official SDK ───────────────────────────────────
 // Docs: https://docs.puter.com/AI/chat/
@@ -80,8 +82,26 @@ export async function chatWithAI(opts: {
       contextSummary = await summarizeChat(toSummarize, userId);
   }
 
-  // 3. RAG: Ambil konteks dari dokumen user jika ada
+  // 3. RAG: Ambil konteks dari dokumen user atau URL jika ada
   if (useRag) {
+    // 3.1 Deteksi & Scrape URL jika ada di pesan
+    const urlRegex = /(https?:\/\/[^\s]+)/gi;
+    const foundUrls = message.match(urlRegex);
+    
+    if (foundUrls && foundUrls.length > 0) {
+        console.log(`🔗 [AI] Detected ${foundUrls.length} URL(s) to scrape...`);
+        for (const url of foundUrls) {
+            try {
+                const webContent = await parseUrl(url);
+                ragContext += `\n\n=== ISI WEBSITE: ${url} ===\n${webContent}\n=== AKHIR WEBSITE ===\n`;
+                ragSources.push(url);
+            } catch (err) {
+                console.warn(`⚠️ [AI] Gagal scrape URL: ${url}`, (err as Error).message);
+            }
+        }
+    }
+
+    // 3.2 Pencarian RAG (Vector Search)
     let chunks = await retrieveRelevantChunks({ query: message, userId, topK: 4 });
     
     // Fallback: Jika pertanyaan sangat pendek/vague (seperti "apa isinya") dan chunks kosong,
@@ -240,8 +260,6 @@ function generateFallbackReply(message: string): string {
 }
 
 // ─── Group Credit Checker ─────────────────────────────────────────────────
-
-import db from '../config/knex';
 
 export async function checkGroupCredit(groupJid: string): Promise<{
   allowed: boolean;
