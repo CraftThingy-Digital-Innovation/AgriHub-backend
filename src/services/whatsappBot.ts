@@ -21,11 +21,15 @@ import { v4 as uuidv4 } from 'uuid';
 // ─── Constants ───────────────────────────────────────────────────────────
 let waSocket: WASocket | null = null;
 let isConnected = false;
-let qrCode = '';
+let qrCode: string | null = '';
 const logger = pino({ level: 'silent' });
 
 // Sesi penanggung jawab grup (Map<groupJid + senderLid, { userId, expires }>)
 const pendingAssignments = new Map<string, { userId: string, expires: number }>();
+
+let isInitializing = false;
+let isConnecting = false;
+let isInitializedFlag = false; 
 
 // ─── Database Auth State Provider ─────────────────────────────────────────
 
@@ -133,15 +137,28 @@ async function ensureSystemUsers() {
   }
 }
 
-let isInitialized = false;
-
 export async function connectWhatsApp(): Promise<void> {
-  if (!isInitialized) {
-    await ensureSystemUsers();
-    isInitialized = true;
+  if (isConnecting) {
+    console.log('⏳ Connection already in progress, skipping...');
+    return;
   }
+  
+  isConnecting = true;
+
+  if (!isInitializedFlag && !isInitializing) {
+    isInitializing = true;
+    try {
+        await ensureSystemUsers();
+        isInitializedFlag = true;
+    } finally {
+        isInitializing = false;
+    }
+  }
+
   const { state, saveCreds } = await useDatabaseAuthState();
   const { version } = await fetchLatestBaileysVersion();
+
+  console.log('🚀 Connecting to WhatsApp with Baileys v' + version.join('.'));
 
   waSocket = makeWASocket({
     version,
@@ -152,55 +169,51 @@ export async function connectWhatsApp(): Promise<void> {
 
   waSocket.ev.on('creds.update', saveCreds);
 
-  waSocket.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+  waSocket.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect, qr } = update;
+    
     if (qr) {
       qrCode = qr;
       console.log('\n📱 Scan QR Code AgriHub WhatsApp Bot (Database Persistent Mode):\n');
       qrcodeTerminal.generate(qr, { small: true });
     }
+
     if (connection === 'close') {
       isConnected = false;
+      isConnecting = false;
       const reason = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const shouldReconnect = reason !== DisconnectReason.loggedOut;
+      
       console.log('WA disconnected, reason:', reason, 'reconnecting:', shouldReconnect);
+      
       if (shouldReconnect) {
-        setTimeout(connectWhatsApp, 5000);
+        // Add randomized delay to avoid flooding and 440 conflict
+        const delay = 3000 + Math.random() * 5000;
+        console.log(`⏳ Reconnecting in ${Math.round(delay)}ms...`);
+        setTimeout(() => connectWhatsApp(), delay);
       } else {
         console.log('🧹 Logging out, clearing database session...');
         db('whatsapp_auth').delete().catch(e => console.error('Gagal hapus session:', e));
       }
     } else if (connection === 'open') {
       isConnected = true;
-      qrCode = '';
-      const identityStr = JSON.stringify(waSocket?.user || {});
-      // Hanya log jika identity berubah untuk menghindari spam
-      if ((waSocket as any)._lastIdentity !== identityStr) {
-        console.log('✅ AgriHub WhatsApp Bot terhubung (MOD DEPLOY-PROOF)!');
-        console.log('🤖 Identity:', JSON.stringify(waSocket?.user || {}, null, 2));
-        (waSocket as any)._lastIdentity = identityStr;
-      }
-
-      // Cleanup pending assignments berkala (setiap 1 menit)
-      setInterval(() => {
-        const now = Date.now();
-        for (const [key, val] of pendingAssignments.entries()) {
-          if (val.expires < now) pendingAssignments.delete(key);
-        }
-      }, 60000);
+      isConnecting = false;
+      qrCode = null;
+      console.log('✅ AgriHub WhatsApp Bot terhubung (MOD DEPLOY-PROOF)!');
+      console.log('🤖 Identity:', JSON.stringify(waSocket?.user || {}, null, 2));
     }
   });
 
   waSocket.ev.on('group-participants.update', async (update) => {
-    const botId = waSocket?.user?.id?.split('@')[0].split(':')[0] || '';
-    const botLid = (waSocket?.user as any)?.lid?.split('@')[0] || '';
+    if (!waSocket) return;
+    const botId = waSocket.user?.id?.split('@')[0].split(':')[0] || '';
+    const botLid = (waSocket.user as any)?.lid?.split('@')[0] || '';
     
     // Jika bot ditambahkan ke grup
     if (update.action === 'add' && update.participants.some((p: any) => p.id?.startsWith(botId) || (botLid && p.id?.startsWith(botLid)))) {
       console.log(`👋 Bot ditambahkan ke grup: ${update.id} oleh ${update.author}`);
       
-      // Track siapa yang add (untuk usage tracking/owner grup)
       if (update.author) {
-        // Cari user berdasarkan JID (Phone) atau LID
         const user = await db('users')
           .where({ whatsapp_lid: update.author })
           .orWhere('phone', 'like', `%${update.author.split('@')[0].replace(/[^0-9]/g, '').slice(-9)}%`)
@@ -212,13 +225,11 @@ export async function connectWhatsApp(): Promise<void> {
             id: uuidv4(),
             group_jid: update.id,
             owner_id: user ? user.id : null,
-            credits_balance: 5.0, // Bonus awal untuk grup baru
+            credits_balance: 5.0,
             is_ai_enabled: true,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           });
-        } else if (user && !existing.owner_id) {
-          await db('group_credits').where({ id: existing.id }).update({ owner_id: user.id });
         }
       }
 
@@ -226,7 +237,7 @@ export async function connectWhatsApp(): Promise<void> {
     }
   });
 
-    waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
+  waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
     console.log(`📡 [WA] Event: messages.upsert | Type: ${type} | Count: ${messages.length}`);
     if (type !== 'notify') return;
     for (const msg of messages) {
@@ -238,7 +249,6 @@ export async function connectWhatsApp(): Promise<void> {
       const doc = findDocumentInMessage(msg.message);
 
       if (doc) {
-        // Jangan di-await agar tidak memblokir loop pesan berikutnya
         handleDocumentUpload(msg, doc).catch(err => console.error('❌ Doc Error:', err));
       } else {
         handleMessage(msg).catch(err => console.error('❌ Msg Error:', err));
@@ -246,6 +256,7 @@ export async function connectWhatsApp(): Promise<void> {
     }
   });
 }
+
 
 function findDocumentInMessage(msg: any): any {
     if (!msg) return null;
