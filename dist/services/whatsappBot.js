@@ -239,18 +239,21 @@ async function connectWhatsApp() {
         }
     });
     waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
+        console.log(`📡 [WA] Event: messages.upsert | Type: ${type} | Count: ${messages.length}`);
         if (type !== 'notify')
             return;
         for (const msg of messages) {
             if (!msg.message || msg.key.fromMe)
                 continue;
+            console.log(`📩 [WA] Processing Msg:`, msg.key.id);
             // Handle Documents (PDF, etc.) - Deep Search
             const doc = findDocumentInMessage(msg.message);
             if (doc) {
-                await handleDocumentUpload(msg, doc);
+                // Jangan di-await agar tidak memblokir loop pesan berikutnya
+                handleDocumentUpload(msg, doc).catch(err => console.error('❌ Doc Error:', err));
             }
             else {
-                await handleMessage(msg);
+                handleMessage(msg).catch(err => console.error('❌ Msg Error:', err));
             }
         }
     });

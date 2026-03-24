@@ -1,4 +1,10 @@
 console.log('🌱 AgriHub: Script loading...');
+process.on('uncaughtException', (err) => {
+  console.error('🔥 UNCAUGHT EXCEPTION:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🌊 UNHANDLED REJECTION:', reason);
+});
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
