@@ -1,11 +1,8 @@
-import axios from 'axios';
+import puter from '@heyputer/puter.js';
 import { retrieveRelevantChunks } from './ragService';
 
-// ─── Puter.js AI Chat via REST API ────────────────────────────────────────
-// Puter.js di server-side menggunakan REST endpoint mereka
-// Docs: https://docs.puter.com/ai/
-
-const PUTER_API_BASE = 'https://api.puter.com/drivers/call';
+// ─── Puter.js AI Chat via Official SDK ───────────────────────────────────
+// Docs: https://docs.puter.com/AI/chat/
 
 // Model yang direkomendasikan (hemat + kapable)
 export const AI_MODELS = {
@@ -143,49 +140,29 @@ async function callPuterAI(opts: {
   const { messages, model, apiKey } = opts;
   
   if (!apiKey) throw new Error('Puter API Key (token) is missing');
-  console.log(`[Puter AI] Calling model ${model} with token: ${apiKey.substring(0, 10)}... (length: ${apiKey.length})`);
+  
+  // Set token untuk request ini
+  puter.setAuthToken(apiKey);
 
-  const response = await axios.post(
-    PUTER_API_BASE,
-    {
-      interface: 'puter-chat-completion',
-      driver: 'openai-completion',
-      method: 'complete',
-      args: {
-        messages,
+  try {
+    const response = await puter.ai.chat(messages, { 
         model,
         max_tokens: 1500,
-        temperature: 0.7,
-      },
-      test_mode: false,
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'Origin': 'https://agrihub.rumah-genbi.com',
-        'Referer': 'https://agrihub.rumah-genbi.com/',
-      },
-      timeout: 45000,
-    }
-  );
+        temperature: 0.7 
+    });
 
-  const result = response.data?.result;
-  const choice = result?.choices?.[0];
-  if (!choice) {
-    console.error('Puter Drivers Call Missing Result:', response.data);
-    throw new Error('Empty response dari Puter AI (drivers/call)');
+    // SDK v2 mengembalikan ChatResponse yang bisa langsung di-string-kan atau diakses propertinya
+    // Jika response adalah object, kita ambil text-nya
+    const reply = (typeof response === 'string') ? response : (response as any).text || (response as any).message?.content || String(response);
+    
+    return {
+      reply,
+      tokensUsed: (response as any).usage?.total_tokens,
+    };
+  } catch (err) {
+    console.error('Puter SDK Error:', err);
+    throw err;
   }
-
-  return {
-    reply: choice.message?.content || '',
-    tokensUsed: result?.usage?.total_tokens,
-  };
-
-  return {
-    reply: choice.message?.content || '',
-    tokensUsed: response.data?.result?.usage?.total_tokens,
-  };
 }
 
 // ─── Fallback response generator (dev mode / no API key) ─────────────────
