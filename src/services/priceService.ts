@@ -100,43 +100,52 @@ export async function searchCommodityPrices(query: string): Promise<string> {
             timeout: 5000
         });
 
-        if (searchRes.data.status !== 'OK' || !searchRes.data.data[1] || searchRes.data.data[1].length === 0) {
-            return `(Sistem: Tidak ditemukan variabel statistik BPS untuk "${searchKeyword}")`;
+        if (searchRes.data.status !== 'OK' || !searchRes.data.data || !searchRes.data.data[1] || searchRes.data.data[1].length === 0) {
+            return `(Sistem: BPS tidak memiliki variabel statistik khusus untuk "${searchKeyword}")`;
         }
 
-        // Ambil variable pertama yang relevan (biasanya yang paling cocok)
-        const variable = searchRes.data.data[1][0];
-        const varId = variable.var_id;
-        const varTitle = variable.title;
+        // Ambil 2 variabel pertama agar AI punya konteks lebih luas
+        const vars = searchRes.data.data[1].slice(0, 2);
+        let groundingText = `=== DATA STATISTIK BPS: ${searchKeyword.toUpperCase()} ===\n`;
 
-        // 2. Ambil data untuk Variabel tersebut (coba tahun ini dan tahun lalu)
-        const currentYear = new Date().getFullYear();
-        const dataRes = await axios.get(`${BPS_BASE_URL}/list/model/data/lang/ind/domain/0000/var/${varId}/key/${apiKey}/th/${currentYear}`, {
-            timeout: 5000
-        });
+        for (const variable of vars) {
+            const varId = variable.var_id;
+            const varTitle = variable.title;
+            const unit = variable.unit || 'satuan tidak diketahui';
 
-        let displayData = "";
-        if (dataRes.data.status === 'OK' && dataRes.data.data) {
-            // Sederhanakan output untuk AI
-            displayData = `Data BPS [${varTitle}]: Tersedia untuk tahun ${currentYear}. Nilai bervariasi per wilayah.`;
-        } else {
-            // Coba tahun sebelumnya jika tahun ini kosong
-            const prevYear = currentYear - 1;
-            const prevDataRes = await axios.get(`${BPS_BASE_URL}/list/model/data/lang/ind/domain/0000/var/${varId}/key/${apiKey}/th/${prevYear}`, {
-                timeout: 5000
-            });
-            
-            if (prevDataRes.data.status === 'OK') {
-                displayData = `Data BPS [${varTitle}]: Menggunakan data tahun ${prevYear} (Data ${currentYear} belum rilis).`;
-            } else {
-                displayData = `Data BPS [${varTitle}]: Data historis tersedia namun gagal mengambil detail saat ini.`;
+            // 2. Ambil data (coba range tahun)
+            const yearsToTry = [new Date().getFullYear(), new Date().getFullYear() - 1, 2022];
+            let dataFound = false;
+
+            for (const th of yearsToTry) {
+                try {
+                    const dataRes = await axios.get(`${BPS_BASE_URL}/list/model/data/lang/ind/domain/0000/var/${varId}/key/${apiKey}/th/${th}`, {
+                        timeout: 4000
+                    });
+
+                    if (dataRes.data.status === 'OK' && dataRes.data.datacontent) {
+                        const content = dataRes.data.datacontent;
+                        // Ambil 3 sampel data pertama (biasanya Nasional atau wilayah utama)
+                        const samples = Object.values(content).slice(0, 3);
+                        const sampleText = samples.length > 0 ? `Sampel nilai: ${samples.join(', ')}` : 'Detail nilai wilayah belum tersedia.';
+                        
+                        groundingText += `• [ID:${varId}] ${varTitle} (${unit})\n  Tahun: ${th}\n  Status: Tersedia\n  ${sampleText}\n`;
+                        dataFound = true;
+                        break;
+                    }
+                } catch { continue; }
+            }
+
+            if (!dataFound) {
+                groundingText += `• [ID:${varId}] ${varTitle}\n  Status: Metadata tersedia, namun data detail tahun terbaru belum rilis di API.\n`;
             }
         }
 
-        return `=== INFO GROUNDING BPS ===\nKomoditas: ${searchKeyword}\nSumber: Badan Pusat Statistik (BPS)\nKonteks: ${displayData}\n(Sampaikan ke user bahwa data ini adalah statistik resmi terbaru dari BPS)`;
+        groundingText += `\n(Gunakan data di atas sebagai referensi statistik utama. Jika user bertanya harga "hari ini" dan data di atas adalah data tahun lalu, sampaikan bahwa ini adalah data statistik resmi terakhir dari BPS).\n`;
+        return groundingText;
 
     } catch (error) {
         console.error('❌ BPS Search Error:', (error as Error).message);
-        return `(Sistem: Gangguan koneksi ke BPS API saat mencari "${searchKeyword}")`;
+        return `(Sistem: Gangguan koneksi ke BPS API saat mencari data "${searchKeyword}")`;
     }
 }
