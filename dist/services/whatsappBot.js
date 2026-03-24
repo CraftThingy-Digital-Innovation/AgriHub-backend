@@ -145,7 +145,7 @@ async function ensureSystemUsers() {
             name: 'AsistenTani Bot',
             email: 'bot@agrihub.id',
             phone: '0000000000',
-            password: (0, uuid_1.v4)(), // Random password
+            password_hash: (0, uuid_1.v4)(), // Random hash
             role: 'admin',
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
