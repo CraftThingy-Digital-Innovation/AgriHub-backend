@@ -26,24 +26,22 @@ exports.AI_MODELS = {
 // ─── System prompt khusus AgriHub ─────────────────────────────────────────
 const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub Indonesia yang ramah dan berpengetahuan luas.
  
- Keahlianmu meliputi:
- - Budidaya tanaman pangan Indonesia (padi, jagung, cabai, sayuran, dll)
- - Pengendalian hama dan penyakit tanaman
- - Teknik irigasi dan pemupukan
- - Analisis harga pasar dan tren komoditas
- - Tips panen dan pascapanen
- - Informasi logistik dan distribusi hasil tani
- - Panduan menggunakan platform AgriHub
- 
- Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan singkat, jelas, dan praktis. 
+  Keahlianmu meliputi:
+  - Budidaya tanaman pangan Indonesia (padi, jagung, cabai, sayuran, dll)
+  - Pengendalian hama dan penyakit tanaman
+  - Teknik irigasi dan pemupukan
+  - Analisis harga pasar dan tren komoditas (UTAMAKAN DATA LIVE API)
+  - Tips panen dan pascapanen
+  - Informasi logistik dan distribusi hasil tani
+  - Panduan menggunakan platform AgriHub
+  
+  ### SUMBER DATA & PRIORITAS (WAJIB DIPATUHI)
+  1. **DATA TERBARU DARI API BPS (GROUNDING)**: Ini adalah data HARGA REAL-TIME. Gunakan ini sebagai **SUMBER UTAMA** untuk statistik harga saat ini.
+  2. **INFORMASI DARI DOKUMEN PENGETAHUAN (RAG)**: Ini adalah data ARCHIVE dari dokumen/buku lama. Gunakan HANYA jika data API tidak ada atau jika user bertanya spesifik tentang isi buku tersebut.
 
- ### AKSES DOKUMEN (KNOWLEDGE BASE)
- Anda MEMILIKI akses ke dokumen pengetahuan (PDF/Excel/Teks) yang diunggah pengguna. Konten dokumen tersebut akan muncul di bawah sebagai teks. 
- - Jika Anda melihat bagian "INFORMASI DARI DOKUMEN PENGETAHUAN", gunakan informasi tersebut sedetail mungkin.
- - JANGAN PERNAH mengatakan "Saya tidak dapat mengakses dokumen ini" jika teksnya ada di konteks. 
- - Jika pengguna bertanya "apa isinya?" atau "jelaskan dokumen ini", ringkaslah teks yang Anda lihat di context.
+  **ATURAN EMAS**: Jika data API (DATA TERBARU) tersedia untuk komoditas yang ditanyakan, MAKA KAMU HARUS MENGABAIKAN data harga dari buku/dokumen lama (seperti statistik 2024/2025). Jangan biarkan user bingung dengan data kadaluarsa. Jelaskan bahwa data yang kamu berikan adalah data terbaru dari BPS.
 
- Jika informasi dari dokumen sudah mencukupi, jangan lagi mengarahkan ke topik umum. Namun jika benar-benar tidak ada info yang relevan sama sekali, baru arahkan kembali ke topik pertanian umum.`;
+  Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan singkat, jelas, dan praktis.`;
 // ─── Main chat function ────────────────────────────────────────────────────
 async function chatWithAI(opts) {
     const { message, history: providedHistory, userId, whatsappJid, useRag = true, model = exports.AI_MODELS.default } = opts;
@@ -96,14 +94,14 @@ async function chatWithAI(opts) {
                 .orderBy('created_at', 'desc')
                 .limit(2);
             if (recentDocs.length > 0) {
-                ragContext = '\n\n=== DOKUMEN TERBARU ANDA ===\n' +
+                ragContext = '\n\n=== DOKUMEN PENGETAHUAN TERBARU ===\n' +
                     recentDocs.map(d => `[Judul: ${d.title}]\nPreview: ${d.content_preview || 'Tidak ada preview.'}`).join('\n\n') +
                     '\n(Gunakan ini jika user bertanya tentang dokumen yang baru saja dikirim atau isi secara umum)\n';
                 ragSources.push(...recentDocs.map(d => d.title));
             }
         }
         else if (chunks.length > 0) {
-            ragContext = '\n\n=== INFORMASI DARI DOKUMEN PENGETAHUAN ===\n' +
+            ragContext = '\n\n=== INFORMASI DARI DOKUMEN PENGETAHUAN (ARSIP) ===\n' +
                 chunks.map(c => `[${c.docTitle}]\n${c.content}`).join('\n\n') +
                 '\n=== AKHIR DOKUMEN ===\n';
             ragSources.push(...chunks.map(c => c.docTitle));
@@ -113,7 +111,7 @@ async function chatWithAI(opts) {
     const priceContext = await (0, priceService_1.searchCommodityPrices)(message);
     const systemMsg = SYSTEM_PROMPT +
         (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
-        (priceContext ? `\n\n=== HARGA REAL-TIME (GROUNDING) ===\n${priceContext}\n` : '') +
+        (priceContext ? `\n\n=== DATA TERBARU DARI API BPS (UTAMAKAN INI) ===\n${priceContext}\n` : '') +
         ragContext;
     const messages = [
         { role: 'system', content: systemMsg },
