@@ -1,3 +1,4 @@
+console.log('🌱 AgriHub: Script loading...');
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -131,6 +132,10 @@ async function bootstrap() {
   }
 }
 
-bootstrap();
+console.log('🚀 AgriHub: Bootstrapping...');
+bootstrap().catch(err => {
+  console.error('💥 CRITICAL BOOTSTRAP ERROR:', err);
+  process.exit(1);
+});
 
 export default app;

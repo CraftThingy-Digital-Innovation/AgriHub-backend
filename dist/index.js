@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+console.log('🌱 AgriHub: Script loading...');
 require("dotenv/config");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
@@ -123,6 +124,10 @@ async function bootstrap() {
         process.exit(1);
     }
 }
-bootstrap();
+console.log('🚀 AgriHub: Bootstrapping...');
+bootstrap().catch(err => {
+    console.error('💥 CRITICAL BOOTSTRAP ERROR:', err);
+    process.exit(1);
+});
 exports.default = app;
 //# sourceMappingURL=index.js.map
