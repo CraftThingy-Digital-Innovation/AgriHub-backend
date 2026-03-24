@@ -317,11 +317,12 @@ export async function connectWhatsApp(): Promise<void> {
       
       if (shouldReconnect) {
         // Special Handling for 440 Conflict (Stream Replacement)
-        // For standard network drops (ECONNRESET, etc.), we reconnect faster (2-5s).
-        let delay = 2000 + Math.random() * 3000;
+        // standard network drops (ECONNRESET, etc.) get 2-7s jitter.
+        // 440 (Conflict) gets 35-70s jitter to definitely allow the other instance to settle.
+        let delay = 2000 + Math.random() * 5000;
         if (reason === 440) {
-            console.warn('⚠️  CONFLIK (440) Detected! Waiting 30s to allow other instances to clear...');
-            delay = 30000 + Math.random() * 10000;
+            console.warn('⚠️  CONFLIK (440) Detected! Waiting ~45s to allow other instances to clear...');
+            delay = 35000 + Math.random() * 35000;
         }
 
         console.log(`⏳ Reconnecting in ${Math.round(delay)}ms...`);
@@ -543,14 +544,36 @@ export function getWAStatus() {
   return { isConnected, hasQR: !!qrCode, qrCode };
 }
 
+/**
+ * Mengirim pesan WhatsApp dengan proteksi koneksi (Wait & Retry)
+ */
 export async function sendWAMessage(jid: string, text: string): Promise<void> {
+  // Jika sedang connecting, tunggu sebentar (max 15 detik)
+  if (!isConnected && isConnecting) {
+    let waitCount = 0;
+    while (!isConnected && isConnecting && waitCount < 30) {
+        await new Promise(r => setTimeout(r, 500));
+        waitCount++;
+    }
+  }
+
   if (!waSocket || !isConnected) {
-    console.warn(`⚠️ [WA] Cannot send message to ${jid}: Bot NOT CONNECTED.`);
+    console.error(`❌ [WA] Failed to send message to ${jid}: Bot NOT CONNECTED after wait.`);
     return;
   }
+
   try {
     await waSocket.sendMessage(jid, { text });
   } catch (err) {
+    // If it fails with "Connection Closed", maybe it just dropped. Try once more if isConnected is still true or becomes true.
+    const errMsg = (err as Error).message;
+    if (errMsg.includes('Closed') || errMsg.includes('reset')) {
+        console.warn(`⚠️ [WA] Send failed (${errMsg}), retrying once in 2s...`);
+        await new Promise(r => setTimeout(r, 2000));
+        if (waSocket && isConnected) {
+            try { await waSocket.sendMessage(jid, { text }); return; } catch {}
+        }
+    }
     console.error(`❌ [WA] Failed to send message to ${jid}:`, err);
   }
 }

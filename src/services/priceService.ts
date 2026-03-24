@@ -39,6 +39,30 @@ export async function getRealTimePrices(commodityName: string): Promise<Commodit
 }
 
 /**
+ * Mendapatkan statistik khusus (SDGs/SDDS/Indikator) dari BPS
+ */
+export async function getBPSStrategicIndicators(): Promise<string> {
+    const apiKey = process.env.BPS_API_KEY;
+    if (!apiKey) return "";
+
+    try {
+        const res = await axios.get(`${BPS_BASE_URL}/list/model/indicators/lang/ind/domain/0000/key/${apiKey}`, { timeout: 5000 });
+        if (res.data.status !== 'OK' || !res.data.data || !res.data.data[1]) return "";
+
+        const data = res.data.data[1];
+        // Ambil 5 indikator strategis terbaru (biasanya NTP, Inflasi, Pertumbuhan Ekonomi)
+        let text = "=== INDIKATOR STRATEGIS NASIONAL (BPS) ===\n";
+        data.slice(0, 5).forEach((item: any) => {
+            text += `• ${item.title}: ${item.value} ${item.unit}\n  (Sumber: ${item.data_source})\n`;
+        });
+        return text;
+    } catch (error) {
+        console.error('❌ BPS Indicators Error:', (error as Error).message);
+        return "";
+    }
+}
+
+/**
  * Mendapatkan statistik dari BPS (Badan Pusat Statistik)
  * Membutuhkan BPS_API_KEY di .env
  */
@@ -67,22 +91,23 @@ export async function searchCommodityPrices(query: string): Promise<string> {
     const apiKey = process.env.BPS_API_KEY;
     if (!apiKey) return "(Sistem: BPS_API_KEY belum dikonfigurasi)";
 
-    // Mapping keyword untuk pencarian BPS yang lebih akurat
+    const lowerQuery = query.toLowerCase();
+
+    // 1. Jika tanya NTP, arahkan ke indikator strategis
+    if (lowerQuery.includes('ntp') || lowerQuery.includes('nilai tukar petani')) {
+        return await getBPSStrategicIndicators();
+    }
+
+    // 2. Mapping keyword untuk pencarian BPS
     const keywordMap: Record<string, string> = {
-        'cabe': 'cabai',
-        'lombok': 'cabai',
-        'brambang': 'bawang merah',
-        'bawang': 'bawang',
-        'beras': 'beras',
-        'telur': 'telur',
-        'daging': 'daging',
-        'minyak': 'minyak goreng',
-        'gula': 'gula pasir'
+        'cabe': 'cabai', 'lombok': 'cabai',
+        'brambang': 'bawang merah', 'bawang': 'bawang',
+        'beras': 'beras', 'telur': 'telur', 'daging': 'daging',
+        'minyak': 'minyak goreng', 'gula': 'gula pasir',
+        'padi': 'padi', 'jagung': 'jagung', 'kedelai': 'kedelai'
     };
 
     let searchKeyword = "";
-    const lowerQuery = query.toLowerCase();
-    
     for (const [key, val] of Object.entries(keywordMap)) {
         if (lowerQuery.includes(key)) {
             searchKeyword = val;
@@ -93,7 +118,6 @@ export async function searchCommodityPrices(query: string): Promise<string> {
     if (!searchKeyword) return "";
 
     try {
-        // 1. Cari Variable ID di BPS
         console.log(`🔍 Searching BPS for: ${searchKeyword}...`);
         const searchRes = await axios.get(`${BPS_BASE_URL}/list/model/var/lang/ind/domain/0000/key/${apiKey}`, {
             params: { keyword: searchKeyword },
@@ -101,47 +125,73 @@ export async function searchCommodityPrices(query: string): Promise<string> {
         });
 
         if (searchRes.data.status !== 'OK' || !searchRes.data.data || !searchRes.data.data[1] || searchRes.data.data[1].length === 0) {
-            return `(Sistem: BPS tidak memiliki variabel statistik khusus untuk "${searchKeyword}")`;
+            return `(Sistem: BPS tidak memiliki data statistik terbaru untuk "${searchKeyword}")`;
         }
 
-        // Ambil 2 variabel pertama agar AI punya konteks lebih luas
-        const vars = searchRes.data.data[1].slice(0, 2);
+        // Ambil max 3 variabel yang paling relevan
+        const vars = searchRes.data.data[1]
+            .filter((v: any) => v.title.toLowerCase().includes('harga') || v.title.toLowerCase().includes(searchKeyword))
+            .slice(0, 3);
+
+        if (vars.length === 0) return "";
+
         let groundingText = `=== DATA STATISTIK BPS: ${searchKeyword.toUpperCase()} ===\n`;
 
         for (const variable of vars) {
             const varId = variable.var_id;
             const varTitle = variable.title;
-            const unit = variable.unit || 'satuan tidak diketahui';
+            const unit = variable.unit || '';
 
-            // 2. Ambil data (coba range tahun)
-            const yearsToTry = [new Date().getFullYear(), new Date().getFullYear() - 1, 2022];
-            let dataFound = false;
+            // Coba ambil data tahun terbaru
+            const currentYear = new Date().getFullYear();
+            const years = [currentYear, currentYear - 1, currentYear - 2];
+            let foundVal = "";
+            let dataYear = "";
 
-            for (const th of yearsToTry) {
+            for (const th of years) {
                 try {
                     const dataRes = await axios.get(`${BPS_BASE_URL}/list/model/data/lang/ind/domain/0000/var/${varId}/key/${apiKey}/th/${th}`, {
-                        timeout: 4000
+                        timeout: 3000
                     });
 
                     if (dataRes.data.status === 'OK' && dataRes.data.datacontent) {
                         const content = dataRes.data.datacontent;
-                        // Ambil 3 sampel data pertama (biasanya Nasional atau wilayah utama)
-                        const samples = Object.values(content).slice(0, 3);
-                        const sampleText = samples.length > 0 ? `Sampel nilai: ${samples.join(', ')}` : 'Detail nilai wilayah belum tersedia.';
+                        const vervars = dataRes.data.vervar || [];
                         
-                        groundingText += `• [ID:${varId}] ${varTitle} (${unit})\n  Tahun: ${th}\n  Status: Tersedia\n  ${sampleText}\n`;
-                        dataFound = true;
-                        break;
+                        // Cari ID untuk "INDONESIA" (9999)
+                        let indonesiaId = "9999"; 
+                        const idnEntry = vervars.find((v: any) => v.label.toUpperCase() === 'INDONESIA');
+                        if (idnEntry) indonesiaId = idnEntry.val.toString();
+
+                        // Key format: [vervar][var][turvar][th][turth]
+                        const targetPrefix = `${indonesiaId}${varId}`;
+                        const matchingKey = Object.keys(content).find(k => k.startsWith(targetPrefix));
+                        
+                        if (matchingKey) {
+                            foundVal = content[matchingKey];
+                            dataYear = th.toString();
+                            break;
+                        } else {
+                            // Fallback: ambil value pertama
+                            const firstKey = Object.keys(content)[0];
+                            if (firstKey) {
+                                foundVal = content[firstKey];
+                                dataYear = th.toString();
+                                break;
+                            }
+                        }
                     }
                 } catch { continue; }
             }
 
-            if (!dataFound) {
-                groundingText += `• [ID:${varId}] ${varTitle}\n  Status: Metadata tersedia, namun data detail tahun terbaru belum rilis di API.\n`;
+            if (foundVal) {
+                groundingText += `• ${varTitle}\n  Nilai (Nasional): ${foundVal} ${unit} (Tahun ${dataYear})\n`;
+            } else {
+                groundingText += `• ${varTitle}\n  Status: Data tabel tersedia, namun belum terbit di API periode terbaru.\n`;
             }
         }
 
-        groundingText += `\n(Gunakan data di atas sebagai referensi statistik utama. Jika user bertanya harga "hari ini" dan data di atas adalah data tahun lalu, sampaikan bahwa ini adalah data statistik resmi terakhir dari BPS).\n`;
+        groundingText += `\n(Gunakan data tahunan di atas sebagai referensi statistik resmi. Jika user bertanya harga hari ini, sampaikan bahwa ini adalah angka resmi terakhir).\n`;
         return groundingText;
 
     } catch (error) {

@@ -4,14 +4,15 @@ const path = require('path');
 
 const distPath = path.join(process.cwd(), 'dist');
 
-if (!fs.existsSync(distPath)) {
-    console.log('🚀 Building production backend (TSC)...');
-    try {
-        execSync('npx tsc', { stdio: 'inherit' });
-    } catch (e) {
-        console.error('❌ TSC Build failed:', e.message);
-        process.exit(1);
+console.log('🚀 Building production backend (TSC)...');
+try {
+    // Force clean old dist before build
+    if (fs.existsSync(distPath)) {
+        fs.rmSync(distPath, { recursive: true, force: true });
     }
-} else {
-    console.log('✅ Dist folder exists, skipping TSC for production optimization.');
+    execSync('npx tsc', { stdio: 'inherit' });
+    console.log('✅ Backend build completed.');
+} catch (e) {
+    console.error('❌ TSC Build failed:', e.message);
+    process.exit(1);
 }
