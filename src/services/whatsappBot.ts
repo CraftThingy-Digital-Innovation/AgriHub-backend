@@ -226,42 +226,57 @@ export async function connectWhatsApp(): Promise<void> {
   if (existingLock) {
       const lockData = JSON.parse(existingLock.data);
       if (lockData.pid && String(lockData.pid) !== String(process.pid)) {
-          console.log(`⚠️ [WA] Ghost detected (PID ${lockData.pid}). Attempting AUTO-KILL...`);
-           try {
-               process.kill(Number(lockData.pid), 'SIGKILL');
-               console.log(`✅ [WA] Killed rogue PID ${lockData.pid}. Continuing...`);
-               // Give it a second to really die
-               await new Promise(r => setTimeout(r, 2000));
-           } catch (e) {
-               const errMsg = (e as Error).message;
-               if ((e as any).code === 'ESRCH') {
-                   console.log(`✅ [WA] Ghost PID ${lockData.pid} is already dead. Cleaning up stale lock.`);
-               } else {
-                   console.warn(`❌ [WA] Failed to kill PID ${lockData.pid}: ${errMsg}. Proceeding anyway...`);
-               }
-               // Hapus lock yang bermasalah agar kita bisa ambil alih
-               await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).delete();
-               // Jangan return/wait 30s, langsung lanjut proses di bawah
-           }
-       }
-   }
+          // Check if the lock is "Fresh" (< 30s)
+          const isFresh = (Date.now() - new Date(existingLock.updated_at).getTime()) < 30000;
+          if (isFresh) {
+              console.warn(`🕒 [WA] Active instance found (PID ${lockData.pid}). Waiting 15s for takeover...`);
+              setTimeout(() => connectWhatsApp(), 15000);
+              return;
+          } else {
+              console.log(`🧹 [WA] Stale lock found from PID ${lockData.pid}. Taking over...`);
+              await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).delete();
+          }
+      }
+  }
 
-  // Upsert Lock
-  const lockData = JSON.stringify({ pid: process.pid, startTime: nowUnix });
+  // Upsert Lock with current PID
+  const myLockData = JSON.stringify({ pid: process.pid, startTime: nowUnix });
   const lockExists = await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
   if (lockExists) {
-      await db('whatsapp_auth').where({ id: lockExists.id }).update({ data: lockData, updated_at: new Date().toISOString() });
+      await db('whatsapp_auth').where({ id: lockExists.id }).update({ data: myLockData, updated_at: new Date().toISOString() });
   } else {
-      await db('whatsapp_auth').insert({ id: uuidv4(), category: 'lock', key_id: lockKey, data: lockData });
+      await db('whatsapp_auth').insert({ id: uuidv4(), category: 'lock', key_id: lockKey, data: myLockData });
   }
 
   // Heartbeat interval (maintain lock every 15s)
   const heartbeatId = setInterval(async () => {
+      // Jika bot sudah tidak terkoneksi/connecting, stop heartbeat
       if (!isConnecting && !isConnected) {
           clearInterval(heartbeatId);
           return;
       }
-      await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).update({ updated_at: new Date().toISOString() });
+
+      try {
+          // VERIFIKASI: Pastikan lock di DB masih milik kita (PID cocok)
+          const currentLock = await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
+          if (currentLock) {
+              const data = JSON.parse(currentLock.data);
+              if (data.pid && String(data.pid) !== String(process.pid)) {
+                  console.warn(`⚠️ [WA] Instance takeover detected (New PID: ${data.pid}). yielding control...`);
+                  clearInterval(heartbeatId);
+                  isConnected = false;
+                  isConnecting = false;
+                  try { waSocket?.end(undefined); } catch {}
+                  waSocket = null;
+                  return;
+              }
+          }
+
+          // Update heartbeat timestamp
+          await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).update({ updated_at: new Date().toISOString() });
+      } catch (err) {
+          console.error('❌ [WA] Heartbeat error:', (err as Error).message);
+      }
   }, 15000);
 
   const versionArr = await getBaileysVersion();
