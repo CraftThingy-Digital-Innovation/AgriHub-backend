@@ -535,11 +535,30 @@ async function handleMessage(msg) {
                 }
                 targetUserId = user.id;
             }
+            // 1. Simpan pesan user ke DB
+            await (0, knex_1.default)('chats').insert({
+                id: (0, uuid_1.v4)(),
+                user_id: user ? user.id : null,
+                whatsapp_jid: jid,
+                role: 'user',
+                content: cleanText || 'Halo!',
+                created_at: new Date().toISOString()
+            });
             const aiReply = await (0, aiService_1.chatWithAI)({
                 message: cleanText || 'Halo!',
                 history: [],
                 userId: targetUserId,
+                whatsappJid: jid,
                 useRag: true
+            });
+            // 2. Simpan balasan AI ke DB
+            await (0, knex_1.default)('chats').insert({
+                id: (0, uuid_1.v4)(),
+                user_id: user ? user.id : 'wa-bot',
+                whatsapp_jid: jid,
+                role: 'assistant',
+                content: aiReply.reply,
+                created_at: new Date().toISOString()
             });
             await sendWAMessage(jid, `🌱 ${aiReply.reply}`);
         }

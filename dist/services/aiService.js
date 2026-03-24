@@ -36,10 +36,28 @@ Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan
 Jika pertanyaan di luar konteks pertanian, arahkan kembali ke topik pertanian atau fitur AgriHub.`;
 // ─── Main chat function ────────────────────────────────────────────────────
 async function chatWithAI(opts) {
-    const { message, history, userId, useRag = true, model = exports.AI_MODELS.default } = opts;
+    const { message, history: providedHistory, userId, whatsappJid, useRag = true, model = exports.AI_MODELS.default } = opts;
     let ragContext = '';
     const ragSources = [];
-    // RAG: Ambil konteks dari dokumen user jika ada
+    // 1. Ambil history dari DB jika whatsappJid ada (untuk bot)
+    let dbHistory = [];
+    if (whatsappJid) {
+        const rows = await (0, knex_1.default)('chats')
+            .where({ whatsapp_jid: whatsappJid })
+            .orderBy('created_at', 'desc')
+            .limit(15);
+        dbHistory = rows.reverse().map(r => ({ role: r.role, content: r.content }));
+    }
+    // Gabungkan history (prioritas history yang dipassing manual jika ada)
+    const finalHistory = providedHistory.length > 0 ? providedHistory : dbHistory;
+    // 2. Cek apakah perlu summarization (Auto Compression)
+    let contextSummary = '';
+    if (finalHistory.length >= 12) {
+        // Jika history panjang, ambil yang sangat lama untuk disummarize
+        const toSummarize = finalHistory.slice(0, -6);
+        contextSummary = await summarizeChat(toSummarize, userId);
+    }
+    // 3. RAG: Ambil konteks dari dokumen user jika ada
     if (useRag) {
         const chunks = await (0, ragService_1.retrieveRelevantChunks)({ query: message, userId, topK: 4 });
         if (chunks.length > 0) {
@@ -49,10 +67,12 @@ async function chatWithAI(opts) {
             ragSources.push(...chunks.map(c => c.docTitle));
         }
     }
-    const systemMsg = SYSTEM_PROMPT + ragContext;
+    const systemMsg = SYSTEM_PROMPT +
+        (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
+        ragContext;
     const messages = [
         { role: 'system', content: systemMsg },
-        ...history.slice(-10), // Keep last 10 turns untuk context
+        ...finalHistory.slice(-6), // Ambil 6 pesan terakhir sebagai context aktif
         { role: 'user', content: message },
     ];
     try {
@@ -73,6 +93,27 @@ async function chatWithAI(opts) {
             reply: 'Maaf, terjadi kesalahan saat menghubungi AI Puter. Token Anda mungkin kadaluarsa. Silakan hubungkan ulang akun Puter Anda. ' + err.message,
             ragSources: [],
         };
+    }
+}
+async function summarizeChat(history, userId) {
+    try {
+        const user = await (0, knex_1.default)('users').where({ id: userId }).select('puter_token').first();
+        if (!user || !user.puter_token)
+            return '';
+        const summaryResponse = await callPuterAI({
+            apiKey: user.puter_token,
+            model: exports.AI_MODELS.default,
+            messages: [
+                { role: 'system', content: 'Ringkas percakapan berikut dalam maksimal 3 kalimat padat yang mencakup poin-poin penting agar AI bisa melanjutkan konteksnya.' },
+                ...history,
+                { role: 'user', content: 'Tolong ringkas percakapan di atas.' }
+            ]
+        });
+        return summaryResponse.reply;
+    }
+    catch (err) {
+        console.error('Summarization error:', err);
+        return '';
     }
 }
 async function callPuterAI(opts) {
