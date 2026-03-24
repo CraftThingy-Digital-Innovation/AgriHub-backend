@@ -118,6 +118,9 @@ async function summarizeChat(history, userId) {
 }
 async function callPuterAI(opts) {
     const { messages, model, apiKey } = opts;
+    if (!apiKey)
+        throw new Error('Puter API Key (token) is missing');
+    console.log(`[Puter AI] Calling model ${model} with token: ${apiKey.substring(0, 10)}... (length: ${apiKey.length})`);
     const response = await axios_1.default.post(PUTER_API_BASE, {
         messages,
         model,
@@ -127,6 +130,8 @@ async function callPuterAI(opts) {
         headers: {
             Authorization: `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
+            'Origin': 'https://agrihub.rumah-genbi.com',
+            'Referer': 'https://agrihub.rumah-genbi.com/',
         },
         timeout: 45000,
     });

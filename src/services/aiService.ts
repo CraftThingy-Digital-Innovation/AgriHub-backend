@@ -141,6 +141,9 @@ async function callPuterAI(opts: {
   apiKey: string;
 }): Promise<{ reply: string; tokensUsed?: number }> {
   const { messages, model, apiKey } = opts;
+  
+  if (!apiKey) throw new Error('Puter API Key (token) is missing');
+  console.log(`[Puter AI] Calling model ${model} with token: ${apiKey.substring(0, 10)}... (length: ${apiKey.length})`);
 
   const response = await axios.post(
     PUTER_API_BASE,
@@ -154,6 +157,8 @@ async function callPuterAI(opts: {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        'Origin': 'https://agrihub.rumah-genbi.com',
+        'Referer': 'https://agrihub.rumah-genbi.com/',
       },
       timeout: 45000,
     }
