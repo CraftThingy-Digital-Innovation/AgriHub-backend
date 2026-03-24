@@ -165,10 +165,10 @@ export async function connectWhatsApp(): Promise<void> {
   const existingLock = await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
   if (existingLock) {
       const lockData = JSON.parse(existingLock.data);
-      if (lockData.pid !== process.pid) {
+      if (lockData.pid && String(lockData.pid) !== String(process.pid)) {
           console.log(`⚠️ [WA] Ghost detected (PID ${lockData.pid}). Attempting AUTO-KILL...`);
           try {
-              process.kill(lockData.pid, 'SIGKILL');
+              process.kill(Number(lockData.pid), 'SIGKILL');
               console.log(`✅ [WA] Killed rogue PID ${lockData.pid}. Continuing...`);
               // Give it a second to really die
               await new Promise(r => setTimeout(r, 2000));
@@ -231,8 +231,8 @@ export async function connectWhatsApp(): Promise<void> {
       
       if (shouldReconnect) {
         // Special Handling for 440 Conflict (Stream Replacement)
-        // Usually means another instance is running. We wait longer (30-60s) to "cool down".
-        let delay = 3000 + Math.random() * 5000;
+        // For standard network drops (ECONNRESET, etc.), we reconnect faster (2-5s).
+        let delay = 2000 + Math.random() * 3000;
         if (reason === 440) {
             console.warn('⚠️  CONFLIK (440) Detected! Waiting 30s to allow other instances to clear...');
             delay = 30000 + Math.random() * 10000;
