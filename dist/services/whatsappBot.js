@@ -244,8 +244,8 @@ async function connectWhatsApp() {
         for (const msg of messages) {
             if (!msg.message || msg.key.fromMe)
                 continue;
-            // Handle Documents (PDF, etc.)
-            const doc = msg.message.documentMessage || msg.message.documentWithCaptionMessage?.message?.documentMessage;
+            // Handle Documents (PDF, etc.) - Deep Search
+            const doc = findDocumentInMessage(msg.message);
             if (doc) {
                 await handleDocumentUpload(msg, doc);
             }
@@ -255,15 +255,32 @@ async function connectWhatsApp() {
         }
     });
 }
+function findDocumentInMessage(msg) {
+    if (!msg)
+        return null;
+    if (msg.documentMessage)
+        return msg.documentMessage;
+    // Check nested structures
+    const keys = ['documentWithCaptionMessage', 'ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2', 'templateMessage', 'interactiveMessage', 'quotedMessage'];
+    for (const key of keys) {
+        if (msg[key]?.message) {
+            const found = findDocumentInMessage(msg[key].message);
+            if (found)
+                return found;
+        }
+    }
+    return null;
+}
 async function handleDocumentUpload(msg, doc) {
     const jid = msg.key.remoteJid;
     const sender = msg.key.participant || msg.key.remoteJid;
     const fileName = doc.fileName || 'dokumen.pdf';
     const mimeType = doc.mimetype;
     // Hanya proses PDF, TXT, dan MD untuk saat ini
-    const allowed = ['application/pdf', 'text/plain', 'text/markdown'];
-    if (!allowed.includes(mimeType)) {
-        // Abaikan jika bukan tipe yang didukung
+    const isPdf = mimeType?.includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
+    const isText = mimeType?.includes('plain') || mimeType?.includes('markdown') || fileName.toLowerCase().endsWith('.txt') || fileName.toLowerCase().endsWith('.md');
+    if (!isPdf && !isText) {
+        console.log(`🚫 Document type not supported: ${mimeType}`);
         return;
     }
     try {
@@ -368,15 +385,19 @@ async function handleMessage(msg) {
         return;
     const jid = msg.key.remoteJid;
     const isGroup = jid.endsWith('@g.us');
+    const sender = msg.key.participant || msg.key.remoteJid || '';
+    console.log(`📩 [WA] Msg from ${sender} in ${jid}`);
     const text = (msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
         msg.message?.imageMessage?.caption ||
         msg.message?.videoMessage?.caption ||
         '').trim();
-    if (!text)
+    if (!text) {
+        // Log even if no text (maybe just a media without caption that wasn't caught by the handler)
+        console.log(`[WA] Empty text or unhandled media from ${sender}`);
         return;
+    }
     const upper = text.toUpperCase();
-    const sender = msg.key.participant || msg.key.remoteJid || '';
     // ── DETEKSI MENTION YANG KUAT (Phone ID & LID) ─────────────────────────
     const botFullId = waSocket?.user?.id || '';
     const botId = botFullId.split('@')[0].split(':')[0] || '';
@@ -408,7 +429,9 @@ async function handleMessage(msg) {
         (isGroup && text.toLowerCase().includes('asistentani')) ||
         (isGroup && text.toLowerCase().includes('bot'));
     if (isGroup) {
-        console.log(`📩 [GROUP] From: ${sender} in ${jid} | Text: "${text}" | Clean: "${cleanText}" | Mention: ${isMentioned}`);
+        // Log sudah di atas, ini untuk detail tambahan
+        if (isMentioned)
+            console.log(`👉 Mentioned! Text: "${text}" | Clean: "${cleanText}"`);
     }
     // ── RESOLUSI IDENTITY (Link Phone & LID) ───────────────────────────────
     let user = null;

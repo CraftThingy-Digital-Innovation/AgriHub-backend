@@ -226,13 +226,14 @@ export async function connectWhatsApp(): Promise<void> {
     }
   });
 
-  waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
+    waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
     for (const msg of messages) {
       if (!msg.message || msg.key.fromMe) continue;
       
-      // Handle Documents (PDF, etc.)
-      const doc = msg.message.documentMessage || msg.message.documentWithCaptionMessage?.message?.documentMessage;
+      // Handle Documents (PDF, etc.) - Deep Search
+      const doc = findDocumentInMessage(msg.message);
+
       if (doc) {
         await handleDocumentUpload(msg, doc);
       } else {
@@ -242,6 +243,21 @@ export async function connectWhatsApp(): Promise<void> {
   });
 }
 
+function findDocumentInMessage(msg: any): any {
+    if (!msg) return null;
+    if (msg.documentMessage) return msg.documentMessage;
+    
+    // Check nested structures
+    const keys = ['documentWithCaptionMessage', 'ephemeralMessage', 'viewOnceMessage', 'viewOnceMessageV2', 'templateMessage', 'interactiveMessage', 'quotedMessage'];
+    for (const key of keys) {
+        if (msg[key]?.message) {
+            const found = findDocumentInMessage(msg[key].message);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
 async function handleDocumentUpload(msg: any, doc: any) {
   const jid = msg.key.remoteJid;
   const sender = msg.key.participant || msg.key.remoteJid;
@@ -249,9 +265,11 @@ async function handleDocumentUpload(msg: any, doc: any) {
   const mimeType = doc.mimetype;
 
   // Hanya proses PDF, TXT, dan MD untuk saat ini
-  const allowed = ['application/pdf', 'text/plain', 'text/markdown'];
-  if (!allowed.includes(mimeType)) {
-    // Abaikan jika bukan tipe yang didukung
+  const isPdf = mimeType?.includes('pdf') || fileName.toLowerCase().endsWith('.pdf');
+  const isText = mimeType?.includes('plain') || mimeType?.includes('markdown') || fileName.toLowerCase().endsWith('.txt') || fileName.toLowerCase().endsWith('.md');
+
+  if (!isPdf && !isText) {
+    console.log(`🚫 Document type not supported: ${mimeType}`);
     return;
   }
 
@@ -363,6 +381,10 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   if (!msg.key) return;
   const jid = msg.key.remoteJid!;
   const isGroup = jid.endsWith('@g.us');
+  const sender = msg.key.participant || msg.key.remoteJid || '';
+  
+  console.log(`📩 [WA] Msg from ${sender} in ${jid}`);
+
   
   const text = (
     msg.message?.conversation ||
@@ -372,10 +394,13 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
     ''
   ).trim();
 
-  if (!text) return;
+  if (!text) {
+     // Log even if no text (maybe just a media without caption that wasn't caught by the handler)
+     console.log(`[WA] Empty text or unhandled media from ${sender}`);
+     return;
+  }
 
   const upper = text.toUpperCase();
-  const sender = msg.key.participant || msg.key.remoteJid || '';
 
   // ── DETEKSI MENTION YANG KUAT (Phone ID & LID) ─────────────────────────
   const botFullId = waSocket?.user?.id || '';
@@ -417,7 +442,8 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
     (isGroup && text.toLowerCase().includes('bot'));
 
   if (isGroup) {
-    console.log(`📩 [GROUP] From: ${sender} in ${jid} | Text: "${text}" | Clean: "${cleanText}" | Mention: ${isMentioned}`);
+     // Log sudah di atas, ini untuk detail tambahan
+     if (isMentioned) console.log(`👉 Mentioned! Text: "${text}" | Clean: "${cleanText}"`);
   }
 
   // ── RESOLUSI IDENTITY (Link Phone & LID) ───────────────────────────────
