@@ -5,11 +5,14 @@ import { searchCommodityPrices } from './priceService';
 // ─── Puter.js AI Chat via Official SDK ───────────────────────────────────
 // Docs: https://docs.puter.com/AI/chat/
 
-// Model yang direkomendasikan (hemat + kapable)
+// Model via Puter — sesuai agri-hub-plan section 13 AI COST
+// Sumber harga: developer.puter.com/ai/models
 export const AI_MODELS = {
-  default: 'gpt-4o-mini',          // Hemat, cepat, bagus untuk konten pertanian
-  advanced: 'claude-3-5-sonnet',   // Untuk analisis kompleks
-  embedding: 'text-embedding-3-small',
+  default:  'qwen/qwen3.5-flash-02-23',       // $0.07/M in, $0.26/M out — Default chat & WA bot
+  advanced: 'qwen/qwen3-235ba22b-2507',        // $0.07/M in, $0.10/M out — RAG kompleks, value terbaik
+  simple:   'nvidia/nemotron-3-nano-30b-a3b',  // $0.05/M in, $0.20/M out — Query sederhana, 1M ctx
+  deep:     'deepseek/deepseekv3.2',           // $0.26/M in, $0.38/M out — Analisis dokumen kompleks
+  fallback: 'arcee-ai/trinity-large-preview:free', // GRATIS — fallback jika credits menipis
 } as const;
 
 export interface ChatMessage {
@@ -139,11 +142,20 @@ export async function chatWithAI(opts: {
     }
 
     const response = await callPuterAI({ messages, model, apiKey: activeToken });
+
     return { reply: response.reply, ragSources, tokensUsed: response.tokensUsed };
   } catch (err) {
-    console.error('AI chat error:', err);
+    const errMsg = (err as Error).message;
+    console.error('AI chat error:', errMsg);
+    // Timeout spesifik — jangan expose detail teknis ke user
+    if (errMsg === 'AI_TIMEOUT') {
+      return {
+        reply: '⏱️ Maaf, AI sedang sibuk dan tidak merespons. Silakan coba lagi dalam beberapa detik.',
+        ragSources: [],
+      };
+    }
     return {
-      reply: 'Maaf, terjadi kesalahan saat menghubungi AI Puter. Token Anda mungkin kadaluarsa. Silakan hubungkan ulang akun Puter Anda. ' + (err as Error).message,
+      reply: 'Maaf, terjadi kesalahan saat menghubungi AI. Token Anda mungkin kadaluarsa. Silakan hubungkan ulang akun Puter Anda.',
       ragSources: [],
     };
   }
@@ -183,22 +195,27 @@ async function callPuterAI(opts: {
   puter.setAuthToken(apiKey);
 
   try {
-    const response = await puter.ai.chat(messages, { 
+    // Timeout 90 detik — dengan max_tokens:1500 model apapun harusnya selesai <20s
+    // Jika lewat 90s hampir pasti hang, bukan response panjang.
+    const aiCallPromise = puter.ai.chat(messages, {
         model,
         max_tokens: 1500,
-        temperature: 0.7 
+        temperature: 0.7
     });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('AI_TIMEOUT')), 90000)
+    );
+    const response = await Promise.race([aiCallPromise, timeoutPromise]);
 
-    // SDK v2 mengembalikan ChatResponse yang bisa langsung di-string-kan atau diakses propertinya
-    // Jika response adalah object, kita ambil text-nya
+    // SDK v2: ambil text dari berbagai format response
     const reply = (typeof response === 'string') ? response : (response as any).text || (response as any).message?.content || String(response);
-    
+
     return {
       reply,
       tokensUsed: (response as any).usage?.total_tokens,
     };
   } catch (err) {
-    console.error('Puter SDK Error:', err);
+    console.error('Puter SDK Error:', (err as Error).message);
     throw err;
   }
 }

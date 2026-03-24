@@ -29,7 +29,62 @@ const pendingAssignments = new Map<string, { userId: string, expires: number }>(
 
 let isInitializing = false;
 let isConnecting = false;
-let isInitializedFlag = false; 
+let isInitializedFlag = false;
+
+// ─── Baileys Version Cache ─────────────────────────────────────────────────
+// fetchLatestBaileysVersion() membuat outbound HTTP call setiap reconnect.
+// Cache ini mencegah hang saat jaringan tidak stabil.
+let _cachedBaileysVersion: number[] | null = null;
+let _lastVersionFetch = 0;
+
+async function getBaileysVersion(): Promise<number[]> {
+  const now = Date.now();
+  // Gunakan cache jika masih fresh (< 1 jam)
+  if (_cachedBaileysVersion && now - _lastVersionFetch < 3_600_000) {
+    return _cachedBaileysVersion;
+  }
+  try {
+    const result = await Promise.race([
+      fetchLatestBaileysVersion(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('VERSION_TIMEOUT')), 8000)
+      ),
+    ]);
+    _cachedBaileysVersion = result.version;
+    _lastVersionFetch = now;
+    return result.version;
+  } catch {
+    console.warn('⚠️ [WA] fetchLatestBaileysVersion timeout/gagal, pakai versi cache/fallback.');
+    return _cachedBaileysVersion || [2, 3000, 1015901307];
+  }
+}
+
+// ─── Watchdog ─────────────────────────────────────────────────────────────
+// Deteksi silent disconnect (TCP timeout dari sisi WA, tanpa trigger event).
+let _lastActivityTime = Date.now();
+let _watchdogId: ReturnType<typeof setInterval> | null = null;
+
+function startWatchdog() {
+  if (_watchdogId) clearInterval(_watchdogId);
+  _lastActivityTime = Date.now();
+  _watchdogId = setInterval(() => {
+    if (!isConnected) {
+      clearInterval(_watchdogId!);
+      _watchdogId = null;
+      return;
+    }
+    const silent = Date.now() - _lastActivityTime;
+    if (silent > 120_000) {
+      console.warn(`⚠️ [WA] Watchdog: Socket silent ${Math.round(silent/1000)}s, forcing reconnect...`);
+      isConnected = false;
+      if (_watchdogId) { clearInterval(_watchdogId); _watchdogId = null; }
+      try { waSocket?.end(undefined); } catch {}
+      waSocket = null;
+      isConnecting = false;
+      setTimeout(() => connectWhatsApp(), 2000);
+    }
+  }, 30_000);
+}
 
 // ─── Database Auth State Provider ─────────────────────────────────────────
 
@@ -145,6 +200,11 @@ export async function connectWhatsApp(): Promise<void> {
   
   isConnecting = true;
 
+  // Guard: pastikan isConnecting selalu direset jika terjadi exception
+  // sebelum socket terbentuk (mencegah flag stuck = true selamanya)
+  let socketCreated = false;
+  try {
+
   if (!isInitializedFlag && !isInitializing) {
     isInitializing = true;
     try {
@@ -198,10 +258,12 @@ export async function connectWhatsApp(): Promise<void> {
       await db('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).update({ updated_at: new Date().toISOString() });
   }, 15000);
 
-  const { state, saveCreds } = await useDatabaseAuthState();
-  const { version } = await fetchLatestBaileysVersion();
+  const versionArr = await getBaileysVersion();
+  const version = versionArr as [number, number, number];
 
-  console.log(`🚀 [PID:${process.pid}] Connecting...`);
+  console.log(`🚀 [PID:${process.pid}] Connecting with Baileys version: ${version.join('.')}...`);
+
+  const { state, saveCreds } = await useDatabaseAuthState();
 
   waSocket = makeWASocket({
     version,
@@ -209,11 +271,14 @@ export async function connectWhatsApp(): Promise<void> {
     logger,
     printQRInTerminal: false,
   });
+  socketCreated = true; // Dari sini, connection.update akan handle isConnecting reset
 
   waSocket.ev.on('creds.update', saveCreds);
 
   waSocket.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
+    // Setiap event koneksi = tanda socket aktif
+    _lastActivityTime = Date.now();
     
     if (qr) {
       qrCode = qr;
@@ -248,6 +313,7 @@ export async function connectWhatsApp(): Promise<void> {
       isConnected = true;
       isConnecting = false;
       qrCode = null;
+      startWatchdog(); // Mulai watchdog setelah koneksi berhasil
       console.log('✅ AgriHub WhatsApp Bot terhubung (MOD DEPLOY-PROOF)!');
       console.log('🤖 Identity:', JSON.stringify(waSocket?.user || {}, null, 2));
     }
@@ -289,6 +355,7 @@ export async function connectWhatsApp(): Promise<void> {
   waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
     console.log(`📡 [WA] Event: messages.upsert | Type: ${type} | Count: ${messages.length}`);
     if (type !== 'notify') return;
+    _lastActivityTime = Date.now(); // Update watchdog timer setiap ada pesan masuk
     for (const msg of messages) {
       if (!msg.message || msg.key.fromMe) continue;
       
@@ -304,6 +371,14 @@ export async function connectWhatsApp(): Promise<void> {
       }
     }
   });
+  } finally {
+    // Jika socket tidak sempat dibuat (exception sebelum makeWASocket),
+    // wajib reset isConnecting agar reconnect berikutnya tidak di-skip.
+    if (!socketCreated) {
+      console.error('❌ [WA] Socket tidak sempat dibuat, reset isConnecting.');
+      isConnecting = false;
+    }
+  }
 }
 
 
@@ -803,6 +878,10 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
            content: cleanText || 'Halo!',
            created_at: new Date().toISOString()
        });
+
+       // Kirim ack langsung agar user tahu bot sedang bekerja
+       // (AI bisa butuh beberapa detik, tanpa ini tampak seperti bot mati)
+       await sendWAMessage(jid, '⏳ _AsistenTani sedang memikirkan jawaban..._');
 
        const aiReply = await chatWithAI({
          message: cleanText || 'Halo!',

@@ -12,11 +12,14 @@ const ragService_1 = require("./ragService");
 const priceService_1 = require("./priceService");
 // ─── Puter.js AI Chat via Official SDK ───────────────────────────────────
 // Docs: https://docs.puter.com/AI/chat/
-// Model yang direkomendasikan (hemat + kapable)
+// Model via Puter — sesuai agri-hub-plan section 13 AI COST
+// Sumber harga: developer.puter.com/ai/models
 exports.AI_MODELS = {
-    default: 'gpt-4o-mini', // Hemat, cepat, bagus untuk konten pertanian
-    advanced: 'claude-3-5-sonnet', // Untuk analisis kompleks
-    embedding: 'text-embedding-3-small',
+    default: 'qwen/qwen3.5-flash-02-23', // $0.07/M in, $0.26/M out — Default chat & WA bot
+    advanced: 'qwen/qwen3-235ba22b-2507', // $0.07/M in, $0.10/M out — RAG kompleks, value terbaik
+    simple: 'nvidia/nemotron-3-nano-30b-a3b', // $0.05/M in, $0.20/M out — Query sederhana, 1M ctx
+    deep: 'deepseek/deepseekv3.2', // $0.26/M in, $0.38/M out — Analisis dokumen kompleks
+    fallback: 'arcee-ai/trinity-large-preview:free', // GRATIS — fallback jika credits menipis
 };
 // ─── System prompt khusus AgriHub ─────────────────────────────────────────
 const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub Indonesia yang ramah dan berpengetahuan luas.
@@ -118,9 +121,17 @@ async function chatWithAI(opts) {
         return { reply: response.reply, ragSources, tokensUsed: response.tokensUsed };
     }
     catch (err) {
-        console.error('AI chat error:', err);
+        const errMsg = err.message;
+        console.error('AI chat error:', errMsg);
+        // Timeout spesifik — jangan expose detail teknis ke user
+        if (errMsg === 'AI_TIMEOUT') {
+            return {
+                reply: '⏱️ Maaf, AI sedang sibuk dan tidak merespons. Silakan coba lagi dalam beberapa detik.',
+                ragSources: [],
+            };
+        }
         return {
-            reply: 'Maaf, terjadi kesalahan saat menghubungi AI Puter. Token Anda mungkin kadaluarsa. Silakan hubungkan ulang akun Puter Anda. ' + err.message,
+            reply: 'Maaf, terjadi kesalahan saat menghubungi AI. Token Anda mungkin kadaluarsa. Silakan hubungkan ulang akun Puter Anda.',
             ragSources: [],
         };
     }
@@ -153,13 +164,16 @@ async function callPuterAI(opts) {
     // Set token untuk request ini
     puter_js_1.default.setAuthToken(apiKey);
     try {
-        const response = await puter_js_1.default.ai.chat(messages, {
+        // Timeout 90 detik — dengan max_tokens:1500 model apapun harusnya selesai <20s
+        // Jika lewat 90s hampir pasti hang, bukan response panjang.
+        const aiCallPromise = puter_js_1.default.ai.chat(messages, {
             model,
             max_tokens: 1500,
             temperature: 0.7
         });
-        // SDK v2 mengembalikan ChatResponse yang bisa langsung di-string-kan atau diakses propertinya
-        // Jika response adalah object, kita ambil text-nya
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('AI_TIMEOUT')), 90000));
+        const response = await Promise.race([aiCallPromise, timeoutPromise]);
+        // SDK v2: ambil text dari berbagai format response
         const reply = (typeof response === 'string') ? response : response.text || response.message?.content || String(response);
         return {
             reply,
@@ -167,7 +181,7 @@ async function callPuterAI(opts) {
         };
     }
     catch (err) {
-        console.error('Puter SDK Error:', err);
+        console.error('Puter SDK Error:', err.message);
         throw err;
     }
 }

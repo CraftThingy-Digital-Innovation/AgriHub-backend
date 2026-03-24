@@ -58,6 +58,63 @@ const pendingAssignments = new Map();
 let isInitializing = false;
 let isConnecting = false;
 let isInitializedFlag = false;
+// ─── Baileys Version Cache ─────────────────────────────────────────────────
+// fetchLatestBaileysVersion() membuat outbound HTTP call setiap reconnect.
+// Cache ini mencegah hang saat jaringan tidak stabil.
+let _cachedBaileysVersion = null;
+let _lastVersionFetch = 0;
+async function getBaileysVersion() {
+    const now = Date.now();
+    // Gunakan cache jika masih fresh (< 1 jam)
+    if (_cachedBaileysVersion && now - _lastVersionFetch < 3600000) {
+        return _cachedBaileysVersion;
+    }
+    try {
+        const result = await Promise.race([
+            (0, baileys_1.fetchLatestBaileysVersion)(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('VERSION_TIMEOUT')), 8000)),
+        ]);
+        _cachedBaileysVersion = result.version;
+        _lastVersionFetch = now;
+        return result.version;
+    }
+    catch {
+        console.warn('⚠️ [WA] fetchLatestBaileysVersion timeout/gagal, pakai versi cache/fallback.');
+        return _cachedBaileysVersion || [2, 3000, 1015901307];
+    }
+}
+// ─── Watchdog ─────────────────────────────────────────────────────────────
+// Deteksi silent disconnect (TCP timeout dari sisi WA, tanpa trigger event).
+let _lastActivityTime = Date.now();
+let _watchdogId = null;
+function startWatchdog() {
+    if (_watchdogId)
+        clearInterval(_watchdogId);
+    _lastActivityTime = Date.now();
+    _watchdogId = setInterval(() => {
+        if (!isConnected) {
+            clearInterval(_watchdogId);
+            _watchdogId = null;
+            return;
+        }
+        const silent = Date.now() - _lastActivityTime;
+        if (silent > 120000) {
+            console.warn(`⚠️ [WA] Watchdog: Socket silent ${Math.round(silent / 1000)}s, forcing reconnect...`);
+            isConnected = false;
+            if (_watchdogId) {
+                clearInterval(_watchdogId);
+                _watchdogId = null;
+            }
+            try {
+                waSocket?.end(undefined);
+            }
+            catch { }
+            waSocket = null;
+            isConnecting = false;
+            setTimeout(() => connectWhatsApp(), 2000);
+        }
+    }, 30000);
+}
 // ─── Database Auth State Provider ─────────────────────────────────────────
 async function ensureAuthTable() {
     const exists = await knex_1.default.schema.hasTable('whatsapp_auth');
@@ -161,150 +218,169 @@ async function connectWhatsApp() {
         return;
     }
     isConnecting = true;
-    if (!isInitializedFlag && !isInitializing) {
-        isInitializing = true;
-        try {
-            await ensureSystemUsers();
-            isInitializedFlag = true;
-        }
-        finally {
-            isInitializing = false;
-        }
-    }
-    // ─── Global Mutex (DB Lock) ─────────────────────────────
-    const lockKey = 'whatsapp_bot_main';
-    const nowUnix = Math.floor(Date.now() / 1000);
-    // Clean up old locks (> 30s)
-    await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).where('updated_at', '<', new Date(Date.now() - 30000).toISOString()).delete();
-    const existingLock = await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
-    if (existingLock) {
-        const lockData = JSON.parse(existingLock.data);
-        if (lockData.pid && String(lockData.pid) !== String(process.pid)) {
-            console.log(`⚠️ [WA] Ghost detected (PID ${lockData.pid}). Attempting AUTO-KILL...`);
+    // Guard: pastikan isConnecting selalu direset jika terjadi exception
+    // sebelum socket terbentuk (mencegah flag stuck = true selamanya)
+    let socketCreated = false;
+    try {
+        if (!isInitializedFlag && !isInitializing) {
+            isInitializing = true;
             try {
-                process.kill(Number(lockData.pid), 'SIGKILL');
-                console.log(`✅ [WA] Killed rogue PID ${lockData.pid}. Continuing...`);
-                // Give it a second to really die
-                await new Promise(r => setTimeout(r, 2000));
+                await ensureSystemUsers();
+                isInitializedFlag = true;
             }
-            catch (e) {
-                console.warn(`❌ [WA] Failed to kill PID ${lockData.pid}: ${e.message}. Waiting 30s...`);
-                setTimeout(() => connectWhatsApp(), 30000);
+            finally {
+                isInitializing = false;
+            }
+        }
+        // ─── Global Mutex (DB Lock) ─────────────────────────────
+        const lockKey = 'whatsapp_bot_main';
+        const nowUnix = Math.floor(Date.now() / 1000);
+        // Clean up old locks (> 30s)
+        await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).where('updated_at', '<', new Date(Date.now() - 30000).toISOString()).delete();
+        const existingLock = await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
+        if (existingLock) {
+            const lockData = JSON.parse(existingLock.data);
+            if (lockData.pid && String(lockData.pid) !== String(process.pid)) {
+                console.log(`⚠️ [WA] Ghost detected (PID ${lockData.pid}). Attempting AUTO-KILL...`);
+                try {
+                    process.kill(Number(lockData.pid), 'SIGKILL');
+                    console.log(`✅ [WA] Killed rogue PID ${lockData.pid}. Continuing...`);
+                    // Give it a second to really die
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+                catch (e) {
+                    console.warn(`❌ [WA] Failed to kill PID ${lockData.pid}: ${e.message}. Waiting 30s...`);
+                    setTimeout(() => connectWhatsApp(), 30000);
+                    return;
+                }
+            }
+        }
+        // Upsert Lock
+        const lockData = JSON.stringify({ pid: process.pid, startTime: nowUnix });
+        const lockExists = await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
+        if (lockExists) {
+            await (0, knex_1.default)('whatsapp_auth').where({ id: lockExists.id }).update({ data: lockData, updated_at: new Date().toISOString() });
+        }
+        else {
+            await (0, knex_1.default)('whatsapp_auth').insert({ id: (0, uuid_1.v4)(), category: 'lock', key_id: lockKey, data: lockData });
+        }
+        // Heartbeat interval (maintain lock every 15s)
+        const heartbeatId = setInterval(async () => {
+            if (!isConnecting && !isConnected) {
+                clearInterval(heartbeatId);
                 return;
             }
-        }
-    }
-    // Upsert Lock
-    const lockData = JSON.stringify({ pid: process.pid, startTime: nowUnix });
-    const lockExists = await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).first();
-    if (lockExists) {
-        await (0, knex_1.default)('whatsapp_auth').where({ id: lockExists.id }).update({ data: lockData, updated_at: new Date().toISOString() });
-    }
-    else {
-        await (0, knex_1.default)('whatsapp_auth').insert({ id: (0, uuid_1.v4)(), category: 'lock', key_id: lockKey, data: lockData });
-    }
-    // Heartbeat interval (maintain lock every 15s)
-    const heartbeatId = setInterval(async () => {
-        if (!isConnecting && !isConnected) {
-            clearInterval(heartbeatId);
-            return;
-        }
-        await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).update({ updated_at: new Date().toISOString() });
-    }, 15000);
-    const { state, saveCreds } = await useDatabaseAuthState();
-    const { version } = await (0, baileys_1.fetchLatestBaileysVersion)();
-    console.log(`🚀 [PID:${process.pid}] Connecting...`);
-    waSocket = (0, baileys_1.default)({
-        version,
-        auth: state,
-        logger,
-        printQRInTerminal: false,
-    });
-    waSocket.ev.on('creds.update', saveCreds);
-    waSocket.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
-        if (qr) {
-            qrCode = qr;
-            console.log('\n📱 Scan QR Code AgriHub WhatsApp Bot (Database Persistent Mode):\n');
-            qrcode_terminal_1.default.generate(qr, { small: true });
-        }
-        if (connection === 'close') {
-            isConnected = false;
-            isConnecting = false;
-            const reason = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = reason !== baileys_1.DisconnectReason.loggedOut;
-            console.log(`WA disconnected [PID:${process.pid}], reason:`, reason, 'reconnecting:', shouldReconnect);
-            if (shouldReconnect) {
-                // Special Handling for 440 Conflict (Stream Replacement)
-                // For standard network drops (ECONNRESET, etc.), we reconnect faster (2-5s).
-                let delay = 2000 + Math.random() * 3000;
-                if (reason === 440) {
-                    console.warn('⚠️  CONFLIK (440) Detected! Waiting 30s to allow other instances to clear...');
-                    delay = 30000 + Math.random() * 10000;
+            await (0, knex_1.default)('whatsapp_auth').where({ category: 'lock', key_id: lockKey }).update({ updated_at: new Date().toISOString() });
+        }, 15000);
+        const versionArr = await getBaileysVersion();
+        const version = versionArr;
+        console.log(`🚀 [PID:${process.pid}] Connecting with Baileys version: ${version.join('.')}...`);
+        const { state, saveCreds } = await useDatabaseAuthState();
+        waSocket = (0, baileys_1.default)({
+            version,
+            auth: state,
+            logger,
+            printQRInTerminal: false,
+        });
+        socketCreated = true; // Dari sini, connection.update akan handle isConnecting reset
+        waSocket.ev.on('creds.update', saveCreds);
+        waSocket.ev.on('connection.update', (update) => {
+            const { connection, lastDisconnect, qr } = update;
+            // Setiap event koneksi = tanda socket aktif
+            _lastActivityTime = Date.now();
+            if (qr) {
+                qrCode = qr;
+                console.log('\n📱 Scan QR Code AgriHub WhatsApp Bot (Database Persistent Mode):\n');
+                qrcode_terminal_1.default.generate(qr, { small: true });
+            }
+            if (connection === 'close') {
+                isConnected = false;
+                isConnecting = false;
+                const reason = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = reason !== baileys_1.DisconnectReason.loggedOut;
+                console.log(`WA disconnected [PID:${process.pid}], reason:`, reason, 'reconnecting:', shouldReconnect);
+                if (shouldReconnect) {
+                    // Special Handling for 440 Conflict (Stream Replacement)
+                    // For standard network drops (ECONNRESET, etc.), we reconnect faster (2-5s).
+                    let delay = 2000 + Math.random() * 3000;
+                    if (reason === 440) {
+                        console.warn('⚠️  CONFLIK (440) Detected! Waiting 30s to allow other instances to clear...');
+                        delay = 30000 + Math.random() * 10000;
+                    }
+                    console.log(`⏳ Reconnecting in ${Math.round(delay)}ms...`);
+                    setTimeout(() => connectWhatsApp(), delay);
                 }
-                console.log(`⏳ Reconnecting in ${Math.round(delay)}ms...`);
-                setTimeout(() => connectWhatsApp(), delay);
-            }
-            else {
-                console.log('🧹 Logging out, clearing database session...');
-                (0, knex_1.default)('whatsapp_auth').where({ category: 'creds', key_id: 'main' }).delete().catch(e => console.error('Gagal hapus session:', e));
-            }
-        }
-        else if (connection === 'open') {
-            isConnected = true;
-            isConnecting = false;
-            qrCode = null;
-            console.log('✅ AgriHub WhatsApp Bot terhubung (MOD DEPLOY-PROOF)!');
-            console.log('🤖 Identity:', JSON.stringify(waSocket?.user || {}, null, 2));
-        }
-    });
-    waSocket.ev.on('group-participants.update', async (update) => {
-        if (!waSocket)
-            return;
-        const botId = waSocket.user?.id?.split('@')[0].split(':')[0] || '';
-        const botLid = waSocket.user?.lid?.split('@')[0] || '';
-        // Jika bot ditambahkan ke grup
-        if (update.action === 'add' && update.participants.some((p) => p.id?.startsWith(botId) || (botLid && p.id?.startsWith(botLid)))) {
-            console.log(`👋 Bot ditambahkan ke grup: ${update.id} oleh ${update.author}`);
-            if (update.author) {
-                const user = await (0, knex_1.default)('users')
-                    .where({ whatsapp_lid: update.author })
-                    .orWhere('phone', 'like', `%${update.author.split('@')[0].replace(/[^0-9]/g, '').slice(-9)}%`)
-                    .first();
-                const existing = await (0, knex_1.default)('group_credits').where({ group_jid: update.id }).first();
-                if (!existing) {
-                    await (0, knex_1.default)('group_credits').insert({
-                        id: (0, uuid_1.v4)(),
-                        group_jid: update.id,
-                        owner_id: user ? user.id : null,
-                        credits_balance: 5.0,
-                        is_ai_enabled: true,
-                        created_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString()
-                    });
+                else {
+                    console.log('🧹 Logging out, clearing database session...');
+                    (0, knex_1.default)('whatsapp_auth').where({ category: 'creds', key_id: 'main' }).delete().catch(e => console.error('Gagal hapus session:', e));
                 }
             }
-            await sendWAMessage(update.id, '🌾 *Halo semuanya! Saya AsistenTani AgriHub.*\n\nSaya siap membantu di grup ini! Tag saya atau ketik *MENU* untuk melihat perintah yang tersedia. Selamat bertani! 🚜🌿');
-        }
-    });
-    waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
-        console.log(`📡 [WA] Event: messages.upsert | Type: ${type} | Count: ${messages.length}`);
-        if (type !== 'notify')
-            return;
-        for (const msg of messages) {
-            if (!msg.message || msg.key.fromMe)
-                continue;
-            console.log(`📩 [WA] Processing Msg:`, msg.key.id);
-            // Handle Documents (PDF, etc.) - Deep Search
-            const doc = findDocumentInMessage(msg.message);
-            if (doc) {
-                handleDocumentUpload(msg, doc).catch(err => console.error('❌ Doc Error:', err));
+            else if (connection === 'open') {
+                isConnected = true;
+                isConnecting = false;
+                qrCode = null;
+                startWatchdog(); // Mulai watchdog setelah koneksi berhasil
+                console.log('✅ AgriHub WhatsApp Bot terhubung (MOD DEPLOY-PROOF)!');
+                console.log('🤖 Identity:', JSON.stringify(waSocket?.user || {}, null, 2));
             }
-            else {
-                handleMessage(msg).catch(err => console.error('❌ Msg Error:', err));
+        });
+        waSocket.ev.on('group-participants.update', async (update) => {
+            if (!waSocket)
+                return;
+            const botId = waSocket.user?.id?.split('@')[0].split(':')[0] || '';
+            const botLid = waSocket.user?.lid?.split('@')[0] || '';
+            // Jika bot ditambahkan ke grup
+            if (update.action === 'add' && update.participants.some((p) => p.id?.startsWith(botId) || (botLid && p.id?.startsWith(botLid)))) {
+                console.log(`👋 Bot ditambahkan ke grup: ${update.id} oleh ${update.author}`);
+                if (update.author) {
+                    const user = await (0, knex_1.default)('users')
+                        .where({ whatsapp_lid: update.author })
+                        .orWhere('phone', 'like', `%${update.author.split('@')[0].replace(/[^0-9]/g, '').slice(-9)}%`)
+                        .first();
+                    const existing = await (0, knex_1.default)('group_credits').where({ group_jid: update.id }).first();
+                    if (!existing) {
+                        await (0, knex_1.default)('group_credits').insert({
+                            id: (0, uuid_1.v4)(),
+                            group_jid: update.id,
+                            owner_id: user ? user.id : null,
+                            credits_balance: 5.0,
+                            is_ai_enabled: true,
+                            created_at: new Date().toISOString(),
+                            updated_at: new Date().toISOString()
+                        });
+                    }
+                }
+                await sendWAMessage(update.id, '🌾 *Halo semuanya! Saya AsistenTani AgriHub.*\n\nSaya siap membantu di grup ini! Tag saya atau ketik *MENU* untuk melihat perintah yang tersedia. Selamat bertani! 🚜🌿');
             }
+        });
+        waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
+            console.log(`📡 [WA] Event: messages.upsert | Type: ${type} | Count: ${messages.length}`);
+            if (type !== 'notify')
+                return;
+            _lastActivityTime = Date.now(); // Update watchdog timer setiap ada pesan masuk
+            for (const msg of messages) {
+                if (!msg.message || msg.key.fromMe)
+                    continue;
+                console.log(`📩 [WA] Processing Msg:`, msg.key.id);
+                // Handle Documents (PDF, etc.) - Deep Search
+                const doc = findDocumentInMessage(msg.message);
+                if (doc) {
+                    handleDocumentUpload(msg, doc).catch(err => console.error('❌ Doc Error:', err));
+                }
+                else {
+                    handleMessage(msg).catch(err => console.error('❌ Msg Error:', err));
+                }
+            }
+        });
+    }
+    finally {
+        // Jika socket tidak sempat dibuat (exception sebelum makeWASocket),
+        // wajib reset isConnecting agar reconnect berikutnya tidak di-skip.
+        if (!socketCreated) {
+            console.error('❌ [WA] Socket tidak sempat dibuat, reset isConnecting.');
+            isConnecting = false;
         }
-    });
+    }
 }
 function findDocumentInMessage(msg) {
     if (!msg)
@@ -763,6 +839,9 @@ async function handleMessage(msg) {
                 content: cleanText || 'Halo!',
                 created_at: new Date().toISOString()
             });
+            // Kirim ack langsung agar user tahu bot sedang bekerja
+            // (AI bisa butuh beberapa detik, tanpa ini tampak seperti bot mati)
+            await sendWAMessage(jid, '⏳ _AsistenTani sedang memikirkan jawaban..._');
             const aiReply = await (0, aiService_1.chatWithAI)({
                 message: cleanText || 'Halo!',
                 history: [],
