@@ -848,7 +848,7 @@ async function handleMessage(msg) {
                         await sendWAMessage(jid, `⚠️ *Status AI Grup:*\n${credits.reason}`);
                     }
                     else {
-                        await sendWAMessage(jid, `🪙 *Saldo AI Grup:*\n\nSisa Kredit: *${credits.balance.toFixed(2)} tokens*\nStatus: Aktif ✅\n\n_Kredit berkurang 0.1 setiap satu pertanyaan AI._`);
+                        await sendWAMessage(jid, `🪙 *Saldo AI Grup:*\n\nSisa Kredit: *${Number(credits.balance).toFixed(2)} tokens*\nStatus: Aktif ✅\n\n_Kredit berkurang 0.1 setiap satu pertanyaan AI._`);
                     }
                 }
                 else {
