@@ -293,3 +293,14 @@ export async function checkGroupCredit(groupJid: string): Promise<{
 export async function deductGroupCredit(groupJid: string, amount = 0.1): Promise<void> {
   await db('group_credits').where({ group_jid: groupJid }).decrement('credits_balance', amount).increment('credits_used', amount);
 }
+
+export async function checkPuterBalance(apiKey: string): Promise<number | null> {
+  try {
+    puter.setAuthToken(apiKey);
+    const usage = await puter.auth.getMonthlyUsage();
+    return usage.allowanceInfo.remaining;
+  } catch (err) {
+    console.error('Puter Balance Error:', (err as Error).message);
+    return null;
+  }
+}

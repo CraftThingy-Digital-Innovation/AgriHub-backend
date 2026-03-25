@@ -13,8 +13,7 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import qrcodeTerminal from 'qrcode-terminal';
 import db from '../config/knex';
-import { chatWithAI } from './aiService';
-import { checkGroupCredit, deductGroupCredit } from './aiService';
+import { chatWithAI, checkGroupCredit, deductGroupCredit, checkPuterBalance } from './aiService';
 import { checkOngkir } from './biteshipService';
 import { v4 as uuidv4 } from 'uuid';
 import * as matchingService from './matchingService';
@@ -891,9 +890,13 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
                 }
             } else {
                 const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-                const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+                const user = await db('users')
+                    .where({ whatsapp_lid: sender })
+                    .orWhere('phone', 'like', `%${phone.slice(-9)}%`)
+                    .first();
                 if (user?.puter_token) {
-                    await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Tertaut* ✅\nMode: Personal (PC)\n\nAnda menggunakan kuota token dari akun Puter pribadi Anda yang telah dihubungkan di dashboard.`);
+                    const balance = await checkPuterBalance(user.puter_token);
+                    await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Tertaut* ✅\nMode: Personal (PC)\n${balance !== null ? `Sisa Kredit: *${Number(balance).toFixed(2)} units*` : 'Kredit: Terhubung'}\n\nAnda menggunakan kuota token dari akun Puter pribadi Anda yang telah dihubungkan di dashboard.`);
                 } else {
                     await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Belum Tertaut* ❌\n\nSilakan login ke AgriHub Web dan hubungkan akun Puter Anda di menu *Pengaturan Chat* agar bisa menggunakan AI di Private Chat.`);
                 }

@@ -45,7 +45,6 @@ const pino_1 = __importDefault(require("pino"));
 const qrcode_terminal_1 = __importDefault(require("qrcode-terminal"));
 const knex_1 = __importDefault(require("../config/knex"));
 const aiService_1 = require("./aiService");
-const aiService_2 = require("./aiService");
 const biteshipService_1 = require("./biteshipService");
 const uuid_1 = require("uuid");
 const matchingService = __importStar(require("./matchingService"));
@@ -843,7 +842,7 @@ async function handleMessage(msg) {
             }
             if (cleanUpper === 'CEK TOKEN' || cleanUpper === 'CEK SALDO' || cleanUpper === 'KREDIT') {
                 if (isGroup) {
-                    const credits = await (0, aiService_2.checkGroupCredit)(jid);
+                    const credits = await (0, aiService_1.checkGroupCredit)(jid);
                     if (!credits.allowed && credits.reason) {
                         await sendWAMessage(jid, `⚠️ *Status AI Grup:*\n${credits.reason}`);
                     }
@@ -853,9 +852,13 @@ async function handleMessage(msg) {
                 }
                 else {
                     const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-                    const user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+                    const user = await (0, knex_1.default)('users')
+                        .where({ whatsapp_lid: sender })
+                        .orWhere('phone', 'like', `%${phone.slice(-9)}%`)
+                        .first();
                     if (user?.puter_token) {
-                        await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Tertaut* ✅\nMode: Personal (PC)\n\nAnda menggunakan kuota token dari akun Puter pribadi Anda yang telah dihubungkan di dashboard.`);
+                        const balance = await (0, aiService_1.checkPuterBalance)(user.puter_token);
+                        await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Tertaut* ✅\nMode: Personal (PC)\n${balance !== null ? `Sisa Kredit: *${Number(balance).toFixed(2)} units*` : 'Kredit: Terhubung'}\n\nAnda menggunakan kuota token dari akun Puter pribadi Anda yang telah dihubungkan di dashboard.`);
                     }
                     else {
                         await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Belum Tertaut* ❌\n\nSilakan login ke AgriHub Web dan hubungkan akun Puter Anda di menu *Pengaturan Chat* agar bisa menggunakan AI di Private Chat.`);
@@ -952,13 +955,13 @@ async function handleMessage(msg) {
                         await sendWAMessage(jid, `🔌 Penanggung jawab grup ini (@${owner.phone.split(':')[0]}) belum menghubungkan akun Puter.com.\n\nHarap hubungkan di: https://agrihub.rumah-genbi.com/app?action=connect-puter`);
                     return;
                 }
-                const credit = await (0, aiService_2.checkGroupCredit)(jid);
+                const credit = await (0, aiService_1.checkGroupCredit)(jid);
                 if (!credit.allowed) {
                     if (isMentioned)
                         await sendWAMessage(jid, `⚠️ Kredit AI Grup Habis.`);
                     return;
                 }
-                await (0, aiService_2.deductGroupCredit)(jid, 0.05);
+                await (0, aiService_1.deductGroupCredit)(jid, 0.05);
                 targetUserId = owner.id; // Semua aktivitas ditarik ke penanggung jawab
             }
             else {

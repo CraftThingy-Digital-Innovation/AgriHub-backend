@@ -7,6 +7,7 @@ exports.AI_MODELS = void 0;
 exports.chatWithAI = chatWithAI;
 exports.checkGroupCredit = checkGroupCredit;
 exports.deductGroupCredit = deductGroupCredit;
+exports.checkPuterBalance = checkPuterBalance;
 const puter_js_1 = __importDefault(require("@heyputer/puter.js"));
 const ragService_1 = require("./ragService");
 const priceService_1 = require("./priceService");
@@ -250,5 +251,16 @@ async function checkGroupCredit(groupJid) {
 }
 async function deductGroupCredit(groupJid, amount = 0.1) {
     await (0, knex_1.default)('group_credits').where({ group_jid: groupJid }).decrement('credits_balance', amount).increment('credits_used', amount);
+}
+async function checkPuterBalance(apiKey) {
+    try {
+        puter_js_1.default.setAuthToken(apiKey);
+        const usage = await puter_js_1.default.auth.getMonthlyUsage();
+        return usage.allowanceInfo.remaining;
+    }
+    catch (err) {
+        console.error('Puter Balance Error:', err.message);
+        return null;
+    }
 }
 //# sourceMappingURL=aiService.js.map
