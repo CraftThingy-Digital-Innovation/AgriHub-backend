@@ -118,9 +118,18 @@ async function chatWithAI(opts) {
     }
     // 4. PRICE GROUNDING: Ambil data harga real-time (Bapanas/BPS)
     const priceContext = await (0, priceService_1.searchCommodityPrices)(message);
+    // 5. CREDIT GROUNDING: Ambil sisa kredit grup jika di grup
+    let creditContext = '';
+    if (whatsappJid && whatsappJid.endsWith('@g.us')) {
+        const credits = await checkGroupCredit(whatsappJid);
+        if (credits.allowed) {
+            creditContext = `\n\n=== INFORMASI KREDIT AI GRUP ===\nSisa kredit AI di grup ini: ${credits.balance.toFixed(2)} tokens.\nSetiap pertanyaan AI memotong 0.1 tokens.\nJika sisa kredit menipis atau habis, beritahu user untuk isi ulang di dashboard.`;
+        }
+    }
     const systemMsg = SYSTEM_PROMPT +
         (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
         (priceContext ? `\n\n=== DATA TERBARU DARI API BPS (UTAMAKAN INI) ===\n${priceContext}\n` : '') +
+        creditContext +
         ragContext;
     const messages = [
         { role: 'system', content: systemMsg },

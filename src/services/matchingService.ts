@@ -92,8 +92,10 @@ async function runMatchingFor(reportId: string, type: 'supply' | 'demand') {
     if (!supply) return matches;
 
     const demands = await db('demand_requests')
-      .where({ komoditas: supply.komoditas, is_active: true })
-      .where('harga_max_per_kg', '>=', supply.harga_per_kg);
+      .join('users', 'demand_requests.requester_id', 'users.id')
+      .where({ komoditas: supply.komoditas, 'demand_requests.is_active': true })
+      .where('harga_max_per_kg', '>=', supply.harga_per_kg)
+      .select('demand_requests.*', 'users.phone', 'users.whatsapp_lid', 'users.name as requester_name');
 
     for (const demand of demands) {
       const score = calculateMatchScore(supply, demand);
@@ -104,11 +106,24 @@ async function runMatchingFor(reportId: string, type: 'supply' | 'demand') {
           supply_id: supply.id,
           demand_id: demand.id,
           score: score,
-          distance_km: 0, // Placeholder
+          distance_km: 0,
           price_diff_pct: ((demand.harga_max_per_kg - supply.harga_per_kg) / demand.harga_max_per_kg) * 100,
           created_at: new Date().toISOString(),
         });
-        matches.push({ id: matchId, score });
+        
+        matches.push({ 
+          id: matchId, 
+          score,
+          matched_user_id: demand.requester_id,
+          matched_user_name: demand.requester_name,
+          matched_phone: demand.phone,
+          matched_lid: demand.whatsapp_lid,
+          demand_id: demand.id,
+          komoditas: supply.komoditas,
+          price: demand.harga_max_per_kg,
+          qty: demand.jumlah_kg,
+          location: demand.kota_tujuan
+        });
       }
     }
   } else {
@@ -116,8 +131,10 @@ async function runMatchingFor(reportId: string, type: 'supply' | 'demand') {
     if (!demand) return matches;
 
     const supplies = await db('supply_reports')
-      .where({ komoditas: demand.komoditas, is_active: true })
-      .where('harga_per_kg', '<=', demand.harga_max_per_kg);
+      .join('users', 'supply_reports.reporter_id', 'users.id')
+      .where({ komoditas: demand.komoditas, 'supply_reports.is_active': true })
+      .where('harga_per_kg', '<=', demand.harga_max_per_kg)
+      .select('supply_reports.*', 'users.phone', 'users.whatsapp_lid', 'users.name as reporter_name');
 
     for (const supply of supplies) {
       const score = calculateMatchScore(supply, demand);
@@ -128,11 +145,24 @@ async function runMatchingFor(reportId: string, type: 'supply' | 'demand') {
           supply_id: supply.id,
           demand_id: demand.id,
           score: score,
-          distance_km: 0, // Placeholder
+          distance_km: 0,
           price_diff_pct: ((demand.harga_max_per_kg - supply.harga_per_kg) / demand.harga_max_per_kg) * 100,
           created_at: new Date().toISOString(),
         });
-        matches.push({ id: matchId, score });
+        
+        matches.push({ 
+          id: matchId, 
+          score,
+          matched_user_id: supply.reporter_id,
+          matched_user_name: supply.reporter_name,
+          matched_phone: supply.phone,
+          matched_lid: supply.whatsapp_lid,
+          supply_id: supply.id,
+          komoditas: demand.komoditas,
+          price: supply.harga_per_kg,
+          qty: supply.jumlah_kg,
+          location: supply.kabupaten
+        });
       }
     }
   }

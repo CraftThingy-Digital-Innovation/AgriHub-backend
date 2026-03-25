@@ -646,7 +646,7 @@ async function handleMessage(msg) {
     }
     try {
         // ── Command Parser (Panggil dengan cleanUpper agar @Bot MENU tetap terbaca MENU) ──
-        const isCommand = ['DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP', 'LINK ', 'LAPOR STOK', 'CARI STOK', 'LIHAT MATCH'].some(c => cleanUpper.startsWith(c));
+        const isCommand = ['DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP', 'LINK ', 'LAPOR STOK', 'CARI STOK', 'LIHAT MATCH', 'CEK TOKEN', 'CEK SALDO', 'KREDIT'].some(c => cleanUpper.startsWith(c));
         if (isCommand) {
             if (cleanUpper.startsWith('LINK ')) {
                 const inputPhone = cleanText.slice(5).trim().replace(/[^0-9]/g, '');
@@ -775,7 +775,18 @@ async function handleMessage(msg) {
                     kabupaten,
                     provinsi: '' // Optional
                 });
-                await sendWAMessage(jid, `✅ *Berhasil!* Stok *${komoditas}* (${jumlah}) Anda telah dilaporkan.\n\nSistem sedang mencari pembeli yang cocok. Ketik *LIHAT MATCH* untuk melihat hasilnya.`);
+                const matchCount = result.matchesFound;
+                await sendWAMessage(jid, `✅ *Berhasil!* Stok *${komoditas}* (${jumlah}) Anda telah dilaporkan.\n\n${matchCount > 0 ? `🔥 *BOOM!* Kami menemukan *${matchCount}* calon pembeli yang cocok untuk Anda!` : 'Sistem sedang mencari pembeli yang cocok.'} Ketik *LIHAT MATCH* untuk melihat hasilnya.`);
+                // Broadcast notifications to matched parties
+                if (matchCount > 0) {
+                    const matches = await matchingService.getMatchesForUser(user.id);
+                    for (const m of matches) {
+                        if (m.supply_id === result.id) {
+                            const targetJid = m.matched_lid || `${m.matched_phone}@s.whatsapp.net`;
+                            await sendWAMessage(targetJid, `🤝 *Kecocokan Baru!* Stok *${komoditas}* yang Anda cari baru saja dilaporkan oleh seorang petani di *${kabupaten}*.\n\n💰 Harga: Rp${Number(harga.replace(/[^0-9]/g, '')).toLocaleString('id-ID')}/kg\n📦 Jumlah: ${jumlah}\n\nSegera cek di dashboard AgriHub!`);
+                        }
+                    }
+                }
                 return;
             }
             if (cleanUpper.startsWith('CARI STOK')) {
@@ -796,7 +807,18 @@ async function handleMessage(msg) {
                     harga_max_per_kg: Number(harga.replace(/[^0-9]/g, '')),
                     kabupaten
                 });
-                await sendWAMessage(jid, `🔍 *Permintaan Dicatat:* Mencari *${komoditas}* (${jumlah}) dengan harga max Rp${Number(harga.replace(/[^0-9]/g, '')).toLocaleString('id-ID')}.\n\nKami akan memberitahu jika ada penjual yang cocok!`);
+                const matchCount = result.matchesFound;
+                await sendWAMessage(jid, `🔍 *Permintaan Dicatat:* Mencari *${komoditas}* (${jumlah}) dengan harga max Rp${Number(harga.replace(/[^0-9]/g, '')).toLocaleString('id-ID')}.\n\n${matchCount > 0 ? `🚀 *Kabar Baik!* Ada *${matchCount}* stok tersedia yang cocok dengan permintaan Anda!` : 'Kami akan memberitahu jika ada penjual yang cocok!'}`);
+                // Broadcast notifications to matched parties
+                if (matchCount > 0) {
+                    const matches = await matchingService.getMatchesForUser(user.id);
+                    for (const m of matches) {
+                        if (m.demand_id === result.id) {
+                            const targetJid = m.matched_lid || `${m.matched_phone}@s.whatsapp.net`;
+                            await sendWAMessage(targetJid, `🤝 *Peluang Penjualan!* Seorang pembeli mencari *${komoditas}* (${jumlah}) di *${kabupaten}* dengan harga s/d Rp${Number(harga.replace(/[^0-9]/g, '')).toLocaleString('id-ID')}.\n\nStok Anda sangat cocok dengan permintaan ini!`);
+                        }
+                    }
+                }
                 return;
             }
             if (cleanUpper === 'LIHAT MATCH') {
@@ -817,6 +839,28 @@ async function handleMessage(msg) {
                     matchText += `  📍 Lokasi: ${m.supply_loc} ↔️ ${m.demand_loc}\n\n`;
                 }
                 await sendWAMessage(jid, matchText);
+                return;
+            }
+            if (cleanUpper === 'CEK TOKEN' || cleanUpper === 'CEK SALDO' || cleanUpper === 'KREDIT') {
+                if (isGroup) {
+                    const credits = await (0, aiService_2.checkGroupCredit)(jid);
+                    if (!credits.allowed && credits.reason) {
+                        await sendWAMessage(jid, `⚠️ *Status AI Grup:*\n${credits.reason}`);
+                    }
+                    else {
+                        await sendWAMessage(jid, `🪙 *Saldo AI Grup:*\n\nSisa Kredit: *${credits.balance.toFixed(2)} tokens*\nStatus: Aktif ✅\n\n_Kredit berkurang 0.1 setiap satu pertanyaan AI._`);
+                    }
+                }
+                else {
+                    const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
+                    const user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+                    if (user?.puter_token) {
+                        await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Tertaut* ✅\nMode: Personal (PC)\n\nAnda menggunakan kuota token dari akun Puter pribadi Anda yang telah dihubungkan di dashboard.`);
+                    }
+                    else {
+                        await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Belum Tertaut* ❌\n\nSilakan login ke AgriHub Web dan hubungkan akun Puter Anda di menu *Pengaturan Chat* agar bisa menggunakan AI di Private Chat.`);
+                    }
+                }
                 return;
             }
             if (cleanUpper === 'MENU' || cleanUpper === 'HELP') {
