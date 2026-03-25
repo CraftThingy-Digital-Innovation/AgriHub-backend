@@ -33,14 +33,25 @@ const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub I
   - Analisis harga pasar dan tren komoditas (UTAMAKAN DATA LIVE API)
   - Tips panen dan pascapanen
   - Informasi logistik dan distribusi hasil tani
-  - Panduan menggunakan platform AgriHub
-  - **Matchmaking Produk (Grosir/STOK)**: Membantu petani melaporkan surplus panen dan membantu pembeli mencari stok dalam jumlah besar.
+  -  ### AGENTIC ACTIONS (TOOL CALLING)
+  Jika user ingin melakukan aksi (lapor, cari, cek ongkir, beli, dll), kamu **WAJIB** menyertakan tag instruksi di akhir jawabanmu dalam format:
+  \`[EXEC: COMMAND | PARAMS]\`
 
-  ### FITUR MATCHMAKING (WHATSAPP NATIVE)
-  Jika user ingin menjual hasil panen dalam jumlah besar atau mencari stok, arahkan mereka menggunakan perintah berikut:
-  - **Lapor Stok**: LAPOR STOK | Cabai | 200kg | 45000 | Sleman
-  - **Cari Stok**: CARI STOK | Padi | 1000kg | 8500 | Sleman
-  - **Cek Match**: LIHAT MATCH
+  Daftar Command yang tersedia:
+  1. **LAPOR_STOK** | Komoditas | Jumlah(kg) | Harga | Kabupaten
+     (Contoh: [EXEC: LAPOR_STOK | Padi | 500 | 8000 | Sleman])
+  2. **CARI_STOK** | Komoditas | Jumlah(kg) | HargaMax | Kabupaten
+     (Contoh: [EXEC: CARI_STOK | Jagung | 1000 | 6500 | Sragen])
+  3. **LIHAT_MATCH**
+     (Contoh: [EXEC: LIHAT_MATCH])
+  4. **CEK_ONGKIR** | Asal | Tujuan | Berat(kg)
+     (Contoh: [EXEC: CEK_ONGKIR | Sleman | Jakarta | 2])
+  5. **BELI_MATCH** | MatchID
+     (Contoh: [EXEC: BELI_MATCH | 4a2b])
+  6. **CEK_TOKEN**
+     (Contoh: [EXEC: CEK_TOKEN])
+  7. **LIHAT_PESANAN**
+     (Contoh: [EXEC: LIHAT_PESANAN])
 
   ### SUMBER DATA & PRIORITAS (WAJIB DIPATUHI)
   1. **DATA TERBARU DARI API BPS (GROUNDING)**: Ini adalah data HARGA REAL-TIME. Gunakan ini sebagai **SUMBER UTAMA** untuk statistik harga saat ini.
@@ -50,7 +61,7 @@ const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub I
 
   **PENTING: JANGAN PERNAH MENGATAKAN KAMU TIDAK PUNYA AKSES API.** Kamu MEMILIKI akses ke API BPS secara real-time. Jika data tidak muncul di konteks, katakan bahwa data untuk komoditas tersebut sedang tidak tersedia di sistem BPS saat ini, tapi jangan pernah berbohong bahwa kamu tidak punya akses teknis.
 
-  Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan singkat, jelas, dan praktis.`;
+  Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan singkat, jelas, dan praktis. Konfirmasikan aksi yang akan kamu lakukan sebelum menyertakan tag [EXEC].`;
 
 
 // ─── Main chat function ────────────────────────────────────────────────────
@@ -108,8 +119,8 @@ export async function chatWithAI(opts: {
         }
     }
 
-    // 3.2 Pencarian RAG (Vector Search)
-    let chunks = await retrieveRelevantChunks({ query: message, userId, topK: 4 });
+    // 3.2 Pencarian RAG (Vector Search) - Dikurangi ke 2 chunk untuk hemat token
+    let chunks = await retrieveRelevantChunks({ query: message, userId, topK: 2 });
     
     // Fallback: Jika pertanyaan sangat pendek/vague (seperti "apa isinya") dan chunks kosong,
     // ambil dokumen terbaru sebagai konteks umum.
@@ -142,7 +153,7 @@ export async function chatWithAI(opts: {
   if (whatsappJid && whatsappJid.endsWith('@g.us')) {
       const credits = await checkGroupCredit(whatsappJid);
       if (credits.allowed) {
-          creditContext = `\n\n=== INFORMASI KREDIT AI GRUP ===\nSisa kredit AI di grup ini: ${Number(credits.balance).toFixed(2)} tokens.\nSetiap pertanyaan AI memotong 0.1 tokens.\nJika sisa kredit menipis atau habis, beritahu user untuk isi ulang di dashboard.`;
+          creditContext = `\n\n=== INFORMASI KREDIT AI GRUP ===\nSisa kredit AI di grup ini: ${Number(credits.balance).toFixed(2)} tokens.\nSetiap pertanyaan AI memotong 0.05 tokens.\nJika sisa kredit menipis atau habis, beritahu user untuk isi ulang di dashboard.`;
       }
   }
 
@@ -155,7 +166,7 @@ export async function chatWithAI(opts: {
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemMsg },
-    ...finalHistory.slice(-6), // Ambil 6 pesan terakhir sebagai context aktif
+    ...finalHistory.slice(-4), // Ambil 4 pesan terakhir (hemat token)
     { role: 'user', content: message },
   ];
 

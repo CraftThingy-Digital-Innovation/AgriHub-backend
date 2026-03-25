@@ -1029,7 +1029,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
           if (!credits.allowed && credits.reason) {
             await sendWAMessage(jid, `⚠️ *Status AI Grup:*\n${credits.reason}`);
           } else {
-            await sendWAMessage(jid, `🪙 *Saldo AI Grup:*\n\nSisa Kredit: *${Number(credits.balance).toFixed(2)} tokens*\nStatus: Aktif ✅\n\n_Kredit berkurang 0.1 setiap satu pertanyaan AI._`);
+            await sendWAMessage(jid, `🪙 *Saldo AI Grup:*\n\nSisa Kredit: *${Number(credits.balance).toFixed(2)} tokens*\nStatus: Aktif ✅\n\n_Kredit berkurang 0.05 setiap satu pertanyaan AI._`);
           }
         } else {
           const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
@@ -1078,6 +1078,9 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
     }
 
     // ── AI Hub Interaction ──
+    const upper = cleanUpper || '';
+    
+    // Group Assignment Logic (If bot is in group but not mentioned)
     if (isGroup && !isMentioned) {
       // Cek apakah user membalas tawaran jadi penanggung jawab (IYA/YA)
       const pending = pendingAssignments.get(jid + sender);
@@ -1087,7 +1090,7 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
           return;
         }
 
-        // Gunakan UPSERT: Update jika ada, Insert jika belum ada (antisipasi bot sudah ada di grup sebelum fitur ini)
+        // Gunakan UPSERT: Update jika ada, Insert jika belum ada
         const existingGroup = await db('group_credits').where({ group_jid: jid }).first();
         if (existingGroup) {
           await db('group_credits').where({ id: existingGroup.id }).update({
@@ -1119,101 +1122,87 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
         await sendWAMessage(jid, msgText);
         return;
       }
-      return;
+      return; 
     }
 
-    if (!isCommand) {
-      // Cek siapa yang bertanggung jawab atas grup ini
-      let targetUserId = 'wa-bot';
-
-      if (isGroup) {
-        const groupMeta = await db('group_credits').where({ group_jid: jid }).first();
-        if (!groupMeta || !groupMeta.owner_id) {
-          // Jika record belum ada sama sekali, buatkan record kosong (tanpa owner) dulu
-          if (!groupMeta) {
-            await db('group_credits').insert({
-              id: uuidv4(),
-              group_jid: jid,
-              owner_id: null,
-              credits_balance: 5.0,
-              is_ai_enabled: true,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            });
-          }
-
-          if (isMentioned) {
-            if (!user) {
-              const isRealPhone = sender.endsWith('@s.whatsapp.net');
-              const decodedPhone = isRealPhone ? sender.split('@')[0].replace(/[^0-9]/g, '') : '';
-              const phoneParam = decodedPhone ? `&phone=${decodedPhone}` : '';
-              await sendWAMessage(jid, `⚠️ Grup ini belum memiliki penanggung jawab AI.\n\nSepertinya Anda belum terdaftar. Silakan daftar dulu melalui link ini agar bisa mengelola grup:\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
-            } else {
-              // Tawarkan jadi penanggung jawab
-              pendingAssignments.set(jid + sender, { userId: user.id, expires: Date.now() + 300000 }); // 5 menit
-              await sendWAMessage(jid, `👋 Halo *${user.name}*!\n\nGrup ini belum memiliki penanggung jawab resmi untuk penggunaan AI.\n\nApakah Anda bersedia menjadi penanggung jawab grup ini? (Seluruh penggunaan AI di grup ini akan menggunakan profil & kredit Anda).\n\nBalas *YA* untuk mengkonfirmasi.`);
-            }
-          }
-          return;
+    // AI Logic for Private Chat or Mentioned Group
+    let targetUserId = 'wa-bot';
+    if (isGroup) {
+      const groupMeta = await db('group_credits').where({ group_jid: jid }).first();
+      if (!groupMeta || !groupMeta.owner_id) {
+        if (!groupMeta) {
+          await db('group_credits').insert({
+            id: uuidv4(),
+            group_jid: jid,
+            owner_id: null,
+            credits_balance: 5.0,
+            is_ai_enabled: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
         }
 
-        const owner = await db('users').where({ id: groupMeta.owner_id }).first();
-        if (!owner) {
-          if (isMentioned) await sendWAMessage(jid, `❌ Penanggung jawab grup ini tidak ditemukan di database.`);
-          return;
-        }
-
-        if (!owner.puter_token && owner.role !== 'admin') {
-          if (isMentioned) await sendWAMessage(jid, `🔌 Penanggung jawab grup ini (@${owner.phone.split(':')[0]}) belum menghubungkan akun Puter.com.\n\nHarap hubungkan di: https://agrihub.rumah-genbi.com/app?action=connect-puter`);
-          return;
-        }
-
-        const credit = await checkGroupCredit(jid);
-        if (!credit.allowed) {
-          if (isMentioned) await sendWAMessage(jid, `⚠️ Kredit AI Grup Habis.`);
-          return;
-        }
-        await deductGroupCredit(jid, 0.05);
-        targetUserId = owner.id; // Semua aktivitas ditarik ke penanggung jawab
-      } else {
-        // Private Chat: Check user sendiri (user sudah di-resolve di atas)
-        if (!user) {
-          const isRealPhone = sender.endsWith('@s.whatsapp.net');
-          const decodedPhone = isRealPhone ? sender.split('@')[0].replace(/[^0-9]/g, '') : '';
-          const phoneParam = decodedPhone ? `&phone=${decodedPhone}` : '';
-
-          // Cek apakah ada user dengan "nomor bayangan" dari LID ini atau nomor aslinya
-          let exists = null;
-          if (decodedPhone) {
-            exists = await db('users').where('phone', 'like', `%${decodedPhone.slice(-9)}%`).first();
-          }
-
-          if (exists) {
-            await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk login dan menautkan akun secara otomatis:\n👉 https://agrihub.rumah-genbi.com/login?mode=login${phoneParam}&action=link&lid=${sender}`);
+        if (isMentioned) {
+          if (!user) {
+            const isRealPhone = sender.endsWith('@s.whatsapp.net');
+            const decodedPhone = isRealPhone ? sender.split('@')[0].replace(/[^0-9]/g, '') : '';
+            const phoneParam = decodedPhone ? `&phone=${decodedPhone}` : '';
+            await sendWAMessage(jid, `⚠️ Grup ini belum memiliki penanggung jawab AI.\n\nSepertinya Anda belum terdaftar. Silakan daftar dulu melalui link ini agar bisa mengelola grup:\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
           } else {
-            await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
+            pendingAssignments.set(jid + sender, { userId: user.id, expires: Date.now() + 300000 });
+            await sendWAMessage(jid, `👋 Halo *${user.name}*!\n\nGrup ini belum memiliki penanggung jawab resmi untuk penggunaan AI.\n\nApakah Anda bersedia menjadi penanggung jawab grup ini? (Seluruh penggunaan AI di grup ini akan menggunakan profil & kredit Anda).\n\nBalas *YA* untuk mengkonfirmasi.`);
           }
-          return;
         }
-        if (!user.puter_token && user.role !== 'admin') {
-          await sendWAMessage(jid, `🔌 *Akun Anda belum terhubung ke Puter.com.*\n\nSilakan klik link ini untuk langsung menghubungkan:\n👉 https://agrihub.rumah-genbi.com/app?action=connect-puter`);
-          return;
-        }
-        targetUserId = user.id;
+        return;
       }
 
-      // 1. Simpan pesan user ke DB
-      await db('chats').insert({
-        id: uuidv4(),
-        user_id: user ? user.id : null,
-        whatsapp_jid: jid,
-        role: 'user',
-        content: cleanText || 'Halo!',
-        created_at: new Date().toISOString()
-      });
+      const owner = await db('users').where({ id: groupMeta.owner_id }).first();
+      if (!owner) {
+        if (isMentioned) await sendWAMessage(jid, `❌ Penanggung jawab grup ini tidak ditemukan di database.`);
+        return;
+      }
 
+      const credit = await checkGroupCredit(jid);
+      if (!credit.allowed) {
+        if (isMentioned) await sendWAMessage(jid, `⚠️ Kredit AI Grup Habis.`);
+        return;
+      }
+      await deductGroupCredit(jid, 0.05);
+      targetUserId = owner.id;
+    } else {
+      // Private Chat
+      if (!user) {
+        const isRealPhone = sender.endsWith('@s.whatsapp.net');
+        const decodedPhone = isRealPhone ? sender.split('@')[0].replace(/[^0-9]/g, '') : '';
+        const phoneParam = decodedPhone ? `&phone=${decodedPhone}` : '';
+
+        let exists = null;
+        if (decodedPhone) {
+          exists = await db('users').where('phone', 'like', `%${decodedPhone.slice(-9)}%`).first();
+        }
+
+        if (exists) {
+          await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk login dan menautkan akun secara otomatis:\n👉 https://agrihub.rumah-genbi.com/login?mode=login${phoneParam}&action=link&lid=${sender}`);
+        } else {
+          await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
+        }
+        return;
+      }
+      targetUserId = user.id;
+    }
+
+    // 1. Simpan pesan user ke DB
+    await db('chats').insert({
+      id: uuidv4(),
+      user_id: user ? user.id : null,
+      whatsapp_jid: jid,
+      role: 'user',
+      content: cleanText || 'Halo!',
+      created_at: new Date().toISOString()
+    });
+
+    if (isMentioned || !isGroup) {
       // Kirim ack langsung agar user tahu bot sedang bekerja
-      // (AI bisa butuh beberapa detik, tanpa ini tampak seperti bot mati)
       await sendWAMessage(jid, '⏳ _AsistenTani sedang memikirkan jawaban..._');
 
       const aiReply = await chatWithAI({
@@ -1224,23 +1213,113 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
         useRag: true
       });
 
+      // Process Agentic Tools
+      const finalReply = await processAgenticTools(jid, sender, aiReply.reply);
+
       // 2. Simpan balasan AI ke DB
       await db('chats').insert({
         id: uuidv4(),
         user_id: user ? user.id : 'wa-bot',
         whatsapp_jid: jid,
         role: 'assistant',
-        content: aiReply.reply,
+        content: finalReply,
         created_at: new Date().toISOString()
       });
 
-      await sendWAMessage(jid, `🌱 ${aiReply.reply}`);
+      await sendWAMessage(jid, `🌱 ${finalReply}`);
     }
 
   } catch (err) {
     console.error(`❌ [WA] Critical error in handleMessage:`, err);
     await sendWAMessage(jid, `❌ Maaf, terjadi kesalahan sistem saat memproses pesan Anda.`);
   }
+}
+
+// ── Agentic Tool Processor ───────────────────────────────────────────────
+
+/**
+ * Mendeteksi dan mengeksekusi tag [EXEC: COMMAND | PARAMS] dalam respon AI.
+ * Mengembalikan pesan yang sudah dibersihkan dari tag teknis.
+ */
+async function processAgenticTools(jid: string, sender: string, aiReply: string): Promise<string> {
+    const execRegex = /\[EXEC:\s*(\w+)\s*\|\s*([^\]]+)\]/g;
+    const matches = [...aiReply.matchAll(execRegex)];
+    
+    if (matches.length === 0) return aiReply;
+
+    let processedReply = aiReply;
+    const user = await db('users').where({ whatsapp_lid: sender }).first() || await db('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+
+    for (const match of matches) {
+        const [, command, paramsRaw] = match;
+        const params = paramsRaw.split('|').map(p => p.trim());
+        
+        console.log(`🤖 [Agent] Executing tool: ${command} with params:`, params);
+
+        try {
+            switch (command.toUpperCase()) {
+                case 'LAPOR_STOK': {
+                    if (!user) throw new Error('Akun tidak tertaut.');
+                    const [komoditas, jumlah, harga, kabupaten] = params;
+                    await matchingService.reportSupply(user.id, {
+                        komoditas,
+                        jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
+                        harga_per_kg: Number(harga.replace(/[^0-9]/g, '')),
+                        kabupaten,
+                        provinsi: ''
+                    });
+                    processedReply = processedReply.replace(match[0], `\n\n✅ _Sistem: Stok ${komoditas} berhasil dilaporkan!_`);
+                    break;
+                }
+                case 'CARI_STOK': {
+                    if (!user) throw new Error('Akun tidak tertaut.');
+                    const [komoditas, jumlah, hargaMax, kabupaten] = params;
+                    await matchingService.reportDemand(user.id, {
+                        komoditas,
+                        jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
+                        harga_max_per_kg: Number(hargaMax.replace(/[^0-9]/g, '')),
+                        kabupaten
+                    });
+                    processedReply = processedReply.replace(match[0], `\n\n✅ _Sistem: Permintaan ${komoditas} berhasil dicatat!_`);
+                    break;
+                }
+                case 'CEK_MATCH': {
+                    processedReply = processedReply.replace(match[0], `\n\n💡 _Gunakan perintah *LIHAT MATCH* untuk melihat daftar kecocokan terbaru._`);
+                    break;
+                }
+                case 'CEK_ONGKIR': {
+                    const [origin, destination, weight] = params;
+                    const originP = (await searchArea(origin))[0]?.postal_code;
+                    const destP = (await searchArea(destination))[0]?.postal_code;
+                    if (originP && destP) {
+                        const rates = await checkOngkir({ origin_postal_code: originP, destination_postal_code: destP, weight_gram: Number(weight) * 1000 });
+                        const rateText = rates.slice(0, 3).map(r => `• ${r.courier}: Rp${r.price.toLocaleString('id-ID')}`).join('\n');
+                        processedReply = processedReply.replace(match[0], `\n\n📦 *Estimasi Ongkir:* \n${rateText}`);
+                    }
+                    break;
+                }
+                case 'BELI_MATCH': {
+                    processedReply = processedReply.replace(match[0], `\n\n👉 _Ketik *BELI ${params[0]}* untuk melanjutkan ke pilihan kurir._`);
+                    break;
+                }
+                case 'CEK_TOKEN': {
+                    processedReply = processedReply.replace(match[0], `\n\n💡 _Gunakan perintah *CEK TOKEN* untuk melihat sisa kredit AI Anda._`);
+                    break;
+                }
+                case 'LIHAT_PESANAN': {
+                    processedReply = processedReply.replace(match[0], `\n\n💡 _Gunakan perintah *PESANAN* untuk melihat daftar pesanan Anda._`);
+                    break;
+                }
+                default:
+                    processedReply = processedReply.replace(match[0], '');
+            }
+        } catch (err) {
+            console.error(`❌ [Agent] Tool failure (${command}):`, (err as Error).message);
+            processedReply = processedReply.replace(match[0], `\n\n❌ _Gagal menjalankan aksi: ${(err as Error).message}_`);
+        }
+    }
+
+    return processedReply;
 }
 
 // ── Background Jobs ──────────────────────────────────────────────────────
