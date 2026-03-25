@@ -48,6 +48,7 @@ const aiService_1 = require("./aiService");
 const aiService_2 = require("./aiService");
 const biteshipService_1 = require("./biteshipService");
 const uuid_1 = require("uuid");
+const matchingService = __importStar(require("./matchingService"));
 // ─── Constants ───────────────────────────────────────────────────────────
 let waSocket = null;
 let isConnected = false;
@@ -645,7 +646,7 @@ async function handleMessage(msg) {
     }
     try {
         // ── Command Parser (Panggil dengan cleanUpper agar @Bot MENU tetap terbaca MENU) ──
-        const isCommand = ['DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP', 'LINK '].some(c => cleanUpper.startsWith(c));
+        const isCommand = ['DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP', 'LINK ', 'LAPOR STOK', 'CARI STOK', 'LIHAT MATCH'].some(c => cleanUpper.startsWith(c));
         if (isCommand) {
             if (cleanUpper.startsWith('LINK ')) {
                 const inputPhone = cleanText.slice(5).trim().replace(/[^0-9]/g, '');
@@ -755,8 +756,71 @@ async function handleMessage(msg) {
                 await sendWAMessage(jid, `📦 *Pesanan:* \n${orderText || 'Tidak ada.'}`);
                 return;
             }
+            if (cleanUpper.startsWith('LAPOR STOK')) {
+                const parts = cleanText.split('|').map(s => s.trim());
+                if (parts.length < 4) {
+                    await sendWAMessage(jid, '📝 *Format:* LAPOR STOK | Komoditas | Jumlah kg | Harga/kg | Kabupaten\n\nContoh: LAPOR STOK | Padi | 500kg | 8000 | Sleman');
+                    return;
+                }
+                const [, komoditas, jumlah, harga, kabupaten] = parts;
+                const user = await (0, knex_1.default)('users').where({ whatsapp_lid: sender }).first() || await (0, knex_1.default)('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+                if (!user) {
+                    await sendWAMessage(jid, '❌ Akun Anda belum terdaftar atau tertaut. Gunakan perintah *LINK [Nomor HP]* dulu.');
+                    return;
+                }
+                const result = await matchingService.reportSupply(user.id, {
+                    komoditas,
+                    jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
+                    harga_per_kg: Number(harga.replace(/[^0-9]/g, '')),
+                    kabupaten,
+                    provinsi: '' // Optional
+                });
+                await sendWAMessage(jid, `✅ *Berhasil!* Stok *${komoditas}* (${jumlah}) Anda telah dilaporkan.\n\nSistem sedang mencari pembeli yang cocok. Ketik *LIHAT MATCH* untuk melihat hasilnya.`);
+                return;
+            }
+            if (cleanUpper.startsWith('CARI STOK')) {
+                const parts = cleanText.split('|').map(s => s.trim());
+                if (parts.length < 4) {
+                    await sendWAMessage(jid, '📝 *Format:* CARI STOK | Komoditas | Jumlah kg | Harga Max | Kabupaten\n\nContoh: CARI STOK | Padi | 100kg | 8500 | Sleman');
+                    return;
+                }
+                const [, komoditas, jumlah, harga, kabupaten] = parts;
+                const user = await (0, knex_1.default)('users').where({ whatsapp_lid: sender }).first() || await (0, knex_1.default)('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+                if (!user) {
+                    await sendWAMessage(jid, '❌ Akun Anda belum terdaftar atau tertaut.');
+                    return;
+                }
+                const result = await matchingService.reportDemand(user.id, {
+                    komoditas,
+                    jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
+                    harga_max_per_kg: Number(harga.replace(/[^0-9]/g, '')),
+                    kabupaten
+                });
+                await sendWAMessage(jid, `🔍 *Permintaan Dicatat:* Mencari *${komoditas}* (${jumlah}) dengan harga max Rp${Number(harga.replace(/[^0-9]/g, '')).toLocaleString('id-ID')}.\n\nKami akan memberitahu jika ada penjual yang cocok!`);
+                return;
+            }
+            if (cleanUpper === 'LIHAT MATCH') {
+                const user = await (0, knex_1.default)('users').where({ whatsapp_lid: sender }).first() || await (0, knex_1.default)('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+                if (!user) {
+                    await sendWAMessage(jid, '❌ Akun tidak ditemukan.');
+                    return;
+                }
+                const matches = await matchingService.getMatchesForUser(user.id);
+                if (matches.length === 0) {
+                    await sendWAMessage(jid, 'ℹ️ Belum ada kecocokan (match) baru untuk stok atau permintaan Anda.');
+                    return;
+                }
+                let matchText = '🤝 *Kecocokan (Match) Terbaru:*\n\n';
+                for (const m of matches) {
+                    matchText += `• *${m.komoditas}* (${m.score}% Cocok)\n`;
+                    matchText += `  💰 Harga: Rp${m.supply_price.toLocaleString('id-ID')} vs Rp${m.demand_price.toLocaleString('id-ID')}\n`;
+                    matchText += `  📍 Lokasi: ${m.supply_loc} ↔️ ${m.demand_loc}\n\n`;
+                }
+                await sendWAMessage(jid, matchText);
+                return;
+            }
             if (cleanUpper === 'MENU' || cleanUpper === 'HELP') {
-                await sendWAMessage(jid, `🌾 *Menu AgriHub*\n\n• DAFTAR TOKO | nama | kab | prov | produk\n• JUAL [nama] [harga] [stok]\n• STOK\n• PESANAN\n• ONGKIR [asal] [tujuan] [berat]\n• LINK [NomorHP] (Tautkan WA ini ke akun Anda)\n\nAtau tanya saja langsung ke AI!`);
+                await sendWAMessage(jid, `🌾 *Menu AgriHub*\n\n*E-Commerce:* \n• DAFTAR TOKO | nama | kab | prov | produk\n• JUAL [nama] [harga] [stok]\n• STOK & PESANAN\n\n*Matchmaking (Grosir/Langsung):*\n• LAPOR STOK | komoditas | jml | harga | kab\n• CARI STOK | komoditas | jml | harga | kab\n• LIHAT MATCH\n\n*Lainnya:*\n• ONGKIR [asal] [tuj] [berat]\n• LINK [NomorHP]\n\nAtau tanya saja langsung ke AI!`);
                 return;
             }
         }
