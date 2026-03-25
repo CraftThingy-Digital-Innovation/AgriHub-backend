@@ -46,8 +46,9 @@ const qrcode_terminal_1 = __importDefault(require("qrcode-terminal"));
 const knex_1 = __importDefault(require("../config/knex"));
 const aiService_1 = require("./aiService");
 const biteshipService_1 = require("./biteshipService");
-const uuid_1 = require("uuid");
 const matchingService = __importStar(require("./matchingService"));
+const transactionService = __importStar(require("./transactionService"));
+const uuid_1 = require("uuid");
 // ─── Constants ───────────────────────────────────────────────────────────
 let waSocket = null;
 let isConnected = false;
@@ -203,7 +204,7 @@ async function ensureSystemUsers() {
         await (0, knex_1.default)('users').insert({
             id: botId,
             name: 'AsistenTani Bot',
-            email: 'bot@agrihub.id',
+            email: 'bot@agrihub.rumah-genbi.com',
             phone: '0000000000',
             password_hash: (0, uuid_1.v4)(), // Random hash
             role: 'admin',
@@ -645,7 +646,7 @@ async function handleMessage(msg) {
     }
     try {
         // ── Command Parser (Panggil dengan cleanUpper agar @Bot MENU tetap terbaca MENU) ──
-        const isCommand = ['DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP', 'LINK ', 'LAPOR STOK', 'CARI STOK', 'LIHAT MATCH', 'CEK TOKEN', 'CEK SALDO', 'KREDIT'].some(c => cleanUpper.startsWith(c));
+        const isCommand = ['DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP', 'LINK ', 'LAPOR STOK', 'CARI STOK', 'LIHAT MATCH', 'CEK TOKEN', 'CEK SALDO', 'KREDIT', 'BELI ', 'PILIH KURIR ', 'KIRIM ', 'TERIMA ', 'BATAL '].some(c => cleanUpper.startsWith(c));
         if (isCommand) {
             if (cleanUpper.startsWith('LINK ')) {
                 const inputPhone = cleanText.slice(5).trim().replace(/[^0-9]/g, '');
@@ -744,15 +745,36 @@ async function handleMessage(msg) {
                 return;
             }
             if (cleanUpper === 'PESANAN') {
-                const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-                const user = await (0, knex_1.default)('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+                const user = await (0, knex_1.default)('users').where({ whatsapp_lid: sender }).first() || await (0, knex_1.default)('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
                 if (!user) {
                     await sendWAMessage(jid, '❌ Akun tidak ditemukan.');
                     return;
                 }
-                const orders = await (0, knex_1.default)('orders').join('products', 'orders.product_id', 'products.id').where('orders.seller_id', user.id).limit(3).select('products.name', 'orders.status');
-                const orderText = orders.map(o => `• ${o.name}: ${o.status}`).join('\n');
-                await sendWAMessage(jid, `📦 *Pesanan:* \n${orderText || 'Tidak ada.'}`);
+                const buying = await (0, knex_1.default)('orders')
+                    .join('supply_reports', 'orders.product_id', 'supply_reports.id')
+                    .where('orders.buyer_id', user.id)
+                    .select('orders.id', 'supply_reports.komoditas', 'orders.status', 'orders.total_amount')
+                    .orderBy('orders.created_at', 'desc').limit(5);
+                const selling = await (0, knex_1.default)('orders')
+                    .join('supply_reports', 'orders.product_id', 'supply_reports.id')
+                    .where('orders.seller_id', user.id)
+                    .select('orders.id', 'supply_reports.komoditas', 'orders.status', 'orders.total_amount')
+                    .orderBy('orders.created_at', 'desc').limit(5);
+                let msg = `📦 *Status Pesanan AgriHub*\n\n`;
+                msg += `🛒 *Beli (Keluar):*\n`;
+                if (buying.length === 0)
+                    msg += `  (Belum ada)\n`;
+                buying.forEach(o => {
+                    msg += `• #${o.id.slice(-6)} | ${o.komoditas} | *${o.status.toUpperCase()}*\n`;
+                });
+                msg += `\n💰 *Jual (Masuk):*\n`;
+                if (selling.length === 0)
+                    msg += `  (Belum ada)\n`;
+                selling.forEach(o => {
+                    msg += `• #${o.id.slice(-6)} | ${o.komoditas} | *${o.status.toUpperCase()}*\n`;
+                });
+                msg += `\n_Ketik TERIMA [ID] jika barang sudah sampai!_`;
+                await sendWAMessage(jid, msg);
                 return;
             }
             if (cleanUpper.startsWith('LAPOR STOK')) {
@@ -840,6 +862,130 @@ async function handleMessage(msg) {
                 await sendWAMessage(jid, matchText);
                 return;
             }
+            if (cleanUpper.startsWith('BELI ')) {
+                const matchId = cleanText.slice(5).trim();
+                const user = await (0, knex_1.default)('users').where({ whatsapp_lid: sender }).first() || await (0, knex_1.default)('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+                if (!user) {
+                    await sendWAMessage(jid, '❌ Akun tidak tertaut.');
+                    return;
+                }
+                const match = await (0, knex_1.default)('match_history')
+                    .join('supply_reports', 'match_history.supply_id', 'supply_reports.id')
+                    .join('demand_requests', 'match_history.demand_id', 'demand_requests.id')
+                    .join('users as seller', 'supply_reports.reporter_id', 'seller.id')
+                    .where('match_history.id', 'like', `%${matchId}%`)
+                    .select('match_history.*', 'supply_reports.kabupaten as origin', 'demand_requests.kota_tujuan as dest', 'demand_requests.jumlah_kg as qty', 'supply_reports.komoditas')
+                    .first();
+                if (!match) {
+                    await sendWAMessage(jid, '❌ Match ID tidak valid.');
+                    return;
+                }
+                await sendWAMessage(jid, `⏳ Menghitung ongkir untuk *${match.komoditas}* (${match.qty}kg) dari ${match.origin} ke ${match.dest}...`);
+                const originAreas = await (0, biteshipService_1.searchArea)(match.origin);
+                const destAreas = await (0, biteshipService_1.searchArea)(match.dest);
+                const originP = originAreas[0]?.postal_code;
+                const destP = destAreas[0]?.postal_code;
+                if (!originP || !destP) {
+                    await sendWAMessage(jid, '❌ Gagal menentukan koordinat pengiriman (Kodepos tidak ditemukan). Silakan hubungi admin.');
+                    return;
+                }
+                const rates = await (0, biteshipService_1.checkOngkir)({ origin_postal_code: originP, destination_postal_code: destP, weight_gram: match.qty * 1000 });
+                if (rates.length === 0) {
+                    await sendWAMessage(jid, '❌ Maaf, tidak ada kurir yang menjangkau rute ini.');
+                    return;
+                }
+                let msgText = `🚚 *Pilih Kurir untuk Pesanan Anda:*\n\n`;
+                rates.slice(0, 5).forEach((r, i) => {
+                    msgText += `${i + 1}. *${r.courier}* (${r.service}): Rp${r.price.toLocaleString('id-ID')}\n`;
+                });
+                msgText += `\nBalas dengan: *PILIH KURIR ${match.id.slice(0, 8)} | [Nomor]*\nContoh: *PILIH KURIR ${match.id.slice(0, 8)} | 1*`;
+                await sendWAMessage(jid, msgText);
+                return;
+            }
+            if (cleanUpper.startsWith('PILIH KURIR ')) {
+                const parts = cleanText.slice(12).trim().split('|').map(s => s.trim());
+                if (parts.length < 2) {
+                    await sendWAMessage(jid, '📝 Format: PILIH KURIR [MatchID] | [No]');
+                    return;
+                }
+                const matchShortId = parts[0];
+                const choiceNo = parseInt(parts[1]) - 1;
+                const user = await (0, knex_1.default)('users').where({ whatsapp_lid: sender }).first() || await (0, knex_1.default)('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+                const match = await (0, knex_1.default)('match_history')
+                    .join('supply_reports', 'match_history.supply_id', 'supply_reports.id')
+                    .join('demand_requests', 'match_history.demand_id', 'demand_requests.id')
+                    .where('match_history.id', 'like', `${matchShortId}%`)
+                    .select('match_history.*', 'supply_reports.kabupaten as origin', 'demand_requests.kota_tujuan as dest', 'demand_requests.jumlah_kg as qty')
+                    .first();
+                if (!match) {
+                    await sendWAMessage(jid, '❌ Pesanan sudah kadaluarsa atau Match ID salah.');
+                    return;
+                }
+                const rates = await (0, biteshipService_1.checkOngkir)({
+                    origin_postal_code: (await (0, biteshipService_1.searchArea)(match.origin))[0]?.postal_code,
+                    destination_postal_code: (await (0, biteshipService_1.searchArea)(match.dest))[0]?.postal_code,
+                    weight_gram: match.qty * 1000
+                });
+                const selected = rates[choiceNo];
+                if (!selected) {
+                    await sendWAMessage(jid, '❌ Pilihan nomor kurir tidak valid.');
+                    return;
+                }
+                try {
+                    const order = await transactionService.createOrderFromMatch({
+                        matchId: match.id,
+                        buyerId: user.id,
+                        courierCode: selected.courier,
+                        courierService: selected.service,
+                        shippingPrice: selected.price
+                    });
+                    await sendWAMessage(jid, `✅ *Pesanan Berhasil Dibuat!*\n\nID Pesanan: *#${order.orderId.slice(-8)}*\nTotal Pembayaran: *Rp${order.totalAmount.toLocaleString('id-ID')}*\n\nSilakan lakukan pembayaran melalui link berikut:\n👉 https://agrihub.rumah-genbi.com/pay/${order.orderId}`);
+                    // Notif Seller
+                    const seller = await (0, knex_1.default)('users').where({ id: match.seller_id }).first();
+                    if (seller) {
+                        const sellerJid = seller.whatsapp_lid || `${seller.phone.split(':')[0]}@s.whatsapp.net`;
+                        await sendWAMessage(sellerJid, `💰 *Ada Pesanan Baru!* (#${order.orderId.slice(-8)})\n\nSeseorang telah membeli *${match.komoditas}* (${match.qty}kg).\nStatus: Menunggu Pembayaran.\n\nKami akan memberitahu Anda jika pembayaran sudah diverifikasi!`);
+                    }
+                }
+                catch (err) {
+                    await sendWAMessage(jid, `❌ Gagal membuat pesanan: ${err.message}`);
+                }
+                return;
+            }
+            if (cleanUpper.startsWith('KIRIM ')) {
+                const parts = cleanText.slice(6).trim().split('|').map(s => s.trim());
+                if (parts.length < 3) {
+                    await sendWAMessage(jid, '📝 Format: KIRIM [OrderID] | [Kurir] | [Resi]');
+                    return;
+                }
+                const [orderId, courier, resi] = parts;
+                try {
+                    const fullOrder = await (0, knex_1.default)('orders').where('id', 'like', `%${orderId}`).first();
+                    if (!fullOrder)
+                        throw new Error('Order tidak ditemukan');
+                    await transactionService.updateShippingStatus(fullOrder.id, courier, resi);
+                    await sendWAMessage(jid, `✅ *Status Update:* Pesanan #${orderId} telah dikirim via ${courier} dengan resi *${resi}*.\n\nPembeli telah kami beritahu!`);
+                    // TODO: Notif Buyer via WhatsApp
+                }
+                catch (err) {
+                    await sendWAMessage(jid, `❌ Error: ${err.message}`);
+                }
+                return;
+            }
+            if (cleanUpper.startsWith('TERIMA ')) {
+                const orderShortId = cleanText.slice(7).trim();
+                try {
+                    const fullOrder = await (0, knex_1.default)('orders').where('id', 'like', `%${orderShortId}`).first();
+                    if (!fullOrder)
+                        throw new Error('Order tidak ditemukan');
+                    await transactionService.confirmOrderReceipt(fullOrder.id);
+                    await sendWAMessage(jid, `✅ *Selesai!* Terima kasih telah mengkonfirmasi penerimaan pesanan #${orderShortId}. Dana telah kami teruskan ke dompet Penjual.`);
+                }
+                catch (err) {
+                    await sendWAMessage(jid, `❌ Error: ${err.message}`);
+                }
+                return;
+            }
             if (cleanUpper === 'CEK TOKEN' || cleanUpper === 'CEK SALDO' || cleanUpper === 'KREDIT') {
                 if (isGroup) {
                     const credits = await (0, aiService_1.checkGroupCredit)(jid);
@@ -867,7 +1013,31 @@ async function handleMessage(msg) {
                 return;
             }
             if (cleanUpper === 'MENU' || cleanUpper === 'HELP') {
-                await sendWAMessage(jid, `🌾 *Menu AgriHub*\n\n*E-Commerce:* \n• DAFTAR TOKO | nama | kab | prov | produk\n• JUAL [nama] [harga] [stok]\n• STOK & PESANAN\n\n*Matchmaking (Grosir/Langsung):*\n• LAPOR STOK | komoditas | jml | harga | kab\n• CARI STOK | komoditas | jml | harga | kab\n• LIHAT MATCH\n\n*Lainnya:*\n• ONGKIR [asal] [tuj] [berat]\n• LINK [NomorHP]\n\nAtau tanya saja langsung ke AI!`);
+                const menu = `🌾 *Menu Utama AgriHub* 🌾
+
+*Matchmaking & Grosir:*
+• LAPOR STOK | komoditas | jml | harga | kab
+• CARI STOK | komoditas | jml | harga | kab
+• LIHAT MATCH (Cek hasil matching)
+
+*Transaksi & Logistik:*
+• ONGKIR [Asal] | [Tujuan] | [Berat]
+• BELI [MatchID] (Lanjut ke pembelian)
+• PESANAN (Status beli & jual)
+• KIRIM [OrderID] | [Kurir] | [Resi]
+• TERIMA [OrderID] (Konfirmasi sampai)
+
+*E-Commerce (Retail):*
+• DAFTAR TOKO | nama | kab | prov | produk
+• JUAL [nama] [harga] [stok]
+• STOK (Cek listing toko)
+
+*Lainnya:*
+• CEK TOKEN (Status AI & Kredit)
+• LINK [NomorHP] (Tautkan akun)
+
+Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
+                await sendWAMessage(jid, menu);
                 return;
             }
         }
@@ -1021,7 +1191,15 @@ async function handleMessage(msg) {
         }
     }
     catch (err) {
-        console.error('WA handleMessage error:', err);
+        console.error(`❌ [WA] Critical error in handleMessage:`, err);
+        await sendWAMessage(jid, `❌ Maaf, terjadi kesalahan sistem saat memproses pesan Anda.`);
     }
 }
+// ── Background Jobs ──────────────────────────────────────────────────────
+// Check for auto-confirmation every 12 hours
+setInterval(() => {
+    transactionService.runAutoConfirmJob().catch(err => console.error('Auto-Confirm Job Error:', err));
+}, 12 * 60 * 60 * 1000);
+// Initial run
+setTimeout(() => transactionService.runAutoConfirmJob().catch(() => { }), 10000);
 //# sourceMappingURL=whatsappBot.js.map
