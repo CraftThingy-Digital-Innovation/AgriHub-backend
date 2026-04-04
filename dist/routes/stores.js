@@ -99,5 +99,25 @@ router.patch('/:id', auth_1.requireAuth, async (req, res) => {
         res.status(500).json({ success: false, error: 'Gagal update toko' });
     }
 });
+/** DELETE /api/stores/:id */
+router.delete('/:id', auth_1.requireAuth, async (req, res) => {
+    try {
+        const store = await (0, knex_1.default)('stores').where({ id: req.params.id, owner_id: req.user.id }).first();
+        if (!store) {
+            res.status(404).json({ success: false, error: 'Toko tidak ditemukan' });
+            return;
+        }
+        if (store.is_main_branch) {
+            res.status(400).json({ success: false, error: 'Toko utama tidak dapat dihapus' });
+            return;
+        }
+        // Matikan toko
+        await (0, knex_1.default)('stores').where({ id: req.params.id }).update({ is_active: false, updated_at: new Date().toISOString() });
+        res.json({ success: true, message: 'Cabang toko dinonaktifkan' });
+    }
+    catch {
+        res.status(500).json({ success: false, error: 'Gagal hapus toko' });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=stores.js.map

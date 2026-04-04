@@ -30,6 +30,7 @@ const shipping_1 = __importDefault(require("./routes/shipping"));
 const matching_1 = __importDefault(require("./routes/matching"));
 const price_1 = __importDefault(require("./routes/price"));
 const admin_1 = __importDefault(require("./routes/admin"));
+const pihps_1 = __importDefault(require("./routes/pihps"));
 const whatsappBot_1 = require("./services/whatsappBot");
 const app = (0, express_1.default)();
 app.set('trust proxy', 1); // Diperlukan untuk express-rate-limit di balik proxy (Hostinger/Nginx)
@@ -76,6 +77,7 @@ app.use('/api/shipping', shipping_1.default);
 app.use('/api/matching', matching_1.default);
 app.use('/api/price', price_1.default);
 app.use('/api/admin', admin_1.default);
+app.use('/api/pihps', pihps_1.default);
 // ── WhatsApp Bot Status ──────────────────────────────────────────────────
 app.get('/api/wa/status', (_req, res) => res.json({ success: true, data: (0, whatsappBot_1.getWAStatus)() }));
 // ── Serve Vite Build (Production) ─────────────────────────────────────────
