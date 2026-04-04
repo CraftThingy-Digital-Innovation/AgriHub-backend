@@ -131,7 +131,8 @@ router.post('/add-text', requireAuth, async (req: AuthRequest, res: Response): P
 // ─── DELETE /api/rag/documents/:id ────────────────────────────────────────
 router.delete('/documents/:id', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const ok = await deleteDocument(req.params.id, req.user!.id);
+    const userDb = await db('users').where({ id: req.user!.id }).select('puter_token').first();
+    const ok = await deleteDocument(req.params.id, req.user!.id, userDb?.puter_token);
     if (!ok) { res.status(404).json({ success: false, error: 'Dokumen tidak ditemukan' }); return; }
     res.json({ success: true, message: 'Dokumen dihapus' });
   } catch { res.status(500).json({ success: false, error: 'Gagal hapus dokumen' }); }

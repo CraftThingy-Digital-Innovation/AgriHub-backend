@@ -16,11 +16,12 @@ export const AI_MODELS = {
   simple:   'nvidia/nemotron-3-nano-30b-a3b',  // $0.05/M in, $0.20/M out — Query sederhana, 1M ctx
   deep:     'deepseek/deepseekv3.2',           // $0.26/M in, $0.38/M out — Analisis dokumen kompleks
   fallback: 'arcee-ai/trinity-large-preview:free', // GRATIS — fallback jika credits menipis
+  vision:   'meta-llama/Llama-3.2-11B-Vision-Instruct:free', // GRATIS - Vision multimodal
 } as const;
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | any[];
 }
 
 // ─── System prompt khusus AgriHub ─────────────────────────────────────────
@@ -52,7 +53,9 @@ const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub I
      (Contoh: [EXEC: CHECKOUT_PESANAN | prod-abc | 4 | jne_reg])
      *Otomatis menghitung rincian biaya dan menerbitkan link pembayaran Midtrans yang bisa dipencet oleh User di WA.*
   5. **CEK_TOKEN**
-  6. **LIHAT_PESANAN**
+  6. **LIHAT_TOKO**
+     (Contoh: [EXEC: LIHAT_TOKO])
+     *Mengecek apakah user sudah memiliki profil toko (cabang) beserta detail produk yang dijualnya.*
 
   ### SUMBER DATA & PRIORITAS (WAJIB DIPATUHI)
   1. **DATA TERBARU DARI API BPS (GROUNDING)**: Ini adalah data HARGA REAL-TIME. Gunakan ini sebagai **SUMBER UTAMA** untuk statistik harga saat ini.
@@ -74,12 +77,35 @@ export async function chatWithAI(opts: {
   whatsappJid?: string;
   useRag?: boolean;
   model?: string;
+  imageUrl?: string;
   onChunk?: (chunk: string) => void;
+  onPhaseChange?: (phase: string) => void;
 }): Promise<{ reply: string; ragSources: string[]; tokensUsed?: number }> {
-  const { message, history: providedHistory, userId, whatsappJid, useRag = true, model = AI_MODELS.default, onChunk } = opts;
+  let { message, history: providedHistory, userId, whatsappJid, useRag = true, model = AI_MODELS.default, imageUrl, onChunk, onPhaseChange } = opts;
 
   let ragContext = '';
   const ragSources: string[] = [];
+
+  // Ambil token puter user dari DB (dibutuhkan untuk stage 1 vision)
+  const user = await db('users').where({ id: userId }).select('puter_token', 'role').first();
+  let activeToken = user?.puter_token;
+
+  // 0. TWO-STAGE VISION PIPELINE (VISION-AS-A-TOOL)
+  if (imageUrl && activeToken) {
+     if (onPhaseChange) onPhaseChange('[1/2] Menganalisis gambar...');
+     try {
+         const visionMsgs: ChatMessage[] = [
+             { role: 'user', content: [ { type: 'text', text: 'Jelaskan sedetail mungkin apa isi gambar ini untuk membantu analisis pertanian dan komoditas.' }, { type: 'image_url', image_url: { url: imageUrl } } ] as any }
+         ];
+         // Gunakan Llama Vision statis tanpa stream
+         const visionResp = await callPuterAI({ messages: visionMsgs, model: AI_MODELS.vision, apiKey: activeToken });
+         ragContext += `\n\n=== HASIL PENGAMATAN GAMBAR ===\n${visionResp.reply}\n=== AKHIR PENGAMATAN ===\n`;
+     } catch (err) {
+         console.warn(`⚠️ [AI] Gagal melakukan analisis gambar tahap 1:`, (err as Error).message);
+     }
+  }
+
+  if (onPhaseChange) onPhaseChange('[2/2] Memikirkan jawaban...');
 
   // 1. Ambil history dari DB jika whatsappJid ada (untuk bot)
   let dbHistory: ChatMessage[] = [];
@@ -166,6 +192,8 @@ export async function chatWithAI(opts: {
     creditContext +
     ragContext;
 
+  // Dalam model Two-Stage, model utama (Trinity) dibiarkan buta (hanya menerima string text), 
+  // karena hasil mata (Llama API) sudah masuk di ragContext
   const messages: ChatMessage[] = [
     { role: 'system', content: systemMsg },
     ...finalHistory.slice(-4), // Ambil 4 pesan terakhir (hemat token)
@@ -173,11 +201,6 @@ export async function chatWithAI(opts: {
   ];
 
   try {
-    // Ambil token puter user dari DB
-    const user = await db('users').where({ id: userId }).select('puter_token', 'role').first();
-    
-    let activeToken = user?.puter_token;
-    
     // Bypass untuk admin: Gunakan SYSTEM_PUTER_TOKEN jika user token tidak ada
     if ((!activeToken || activeToken === '') && user?.role === 'admin') {
       activeToken = process.env.SYSTEM_PUTER_TOKEN;
@@ -232,7 +255,7 @@ async function summarizeChat(history: ChatMessage[], userId: string): Promise<st
     }
 }
 
-async function callPuterAI(opts: {
+export async function callPuterAI(opts: {
   messages: ChatMessage[];
   model: string;
   apiKey: string;

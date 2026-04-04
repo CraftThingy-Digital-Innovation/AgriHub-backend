@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AI_MODELS = void 0;
 exports.chatWithAI = chatWithAI;
+exports.callPuterAI = callPuterAI;
 exports.checkGroupCredit = checkGroupCredit;
 exports.deductGroupCredit = deductGroupCredit;
 exports.checkPuterBalance = checkPuterBalance;
@@ -24,6 +25,7 @@ exports.AI_MODELS = {
     simple: 'nvidia/nemotron-3-nano-30b-a3b', // $0.05/M in, $0.20/M out — Query sederhana, 1M ctx
     deep: 'deepseek/deepseekv3.2', // $0.26/M in, $0.38/M out — Analisis dokumen kompleks
     fallback: 'arcee-ai/trinity-large-preview:free', // GRATIS — fallback jika credits menipis
+    vision: 'meta-llama/Llama-3.2-11B-Vision-Instruct:free', // GRATIS - Vision multimodal
 };
 // ─── System prompt khusus AgriHub ─────────────────────────────────────────
 const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub Indonesia yang ramah dan berpengetahuan luas.
@@ -53,7 +55,9 @@ const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub I
      (Contoh: [EXEC: CHECKOUT_PESANAN | prod-abc | 4 | jne_reg])
      *Otomatis menghitung rincian biaya dan menerbitkan link pembayaran Midtrans yang bisa dipencet oleh User di WA.*
   5. **CEK_TOKEN**
-  6. **LIHAT_PESANAN**
+  6. **LIHAT_TOKO**
+     (Contoh: [EXEC: LIHAT_TOKO])
+     *Mengecek apakah user sudah memiliki profil toko (cabang) beserta detail produk yang dijualnya.*
 
   ### SUMBER DATA & PRIORITAS (WAJIB DIPATUHI)
   1. **DATA TERBARU DARI API BPS (GROUNDING)**: Ini adalah data HARGA REAL-TIME. Gunakan ini sebagai **SUMBER UTAMA** untuk statistik harga saat ini.
@@ -66,9 +70,30 @@ const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub I
   Gaya bicaramu: Gunakan Bahasa Indonesia yang mudah dipahami petani. Jawab dengan singkat, jelas, dan praktis. Konfirmasikan aksi yang akan kamu lakukan sebelum menyertakan tag [EXEC].`;
 // ─── Main chat function ────────────────────────────────────────────────────
 async function chatWithAI(opts) {
-    const { message, history: providedHistory, userId, whatsappJid, useRag = true, model = exports.AI_MODELS.default, onChunk } = opts;
+    let { message, history: providedHistory, userId, whatsappJid, useRag = true, model = exports.AI_MODELS.default, imageUrl, onChunk, onPhaseChange } = opts;
     let ragContext = '';
     const ragSources = [];
+    // Ambil token puter user dari DB (dibutuhkan untuk stage 1 vision)
+    const user = await (0, knex_1.default)('users').where({ id: userId }).select('puter_token', 'role').first();
+    let activeToken = user?.puter_token;
+    // 0. TWO-STAGE VISION PIPELINE (VISION-AS-A-TOOL)
+    if (imageUrl && activeToken) {
+        if (onPhaseChange)
+            onPhaseChange('[1/2] Menganalisis gambar...');
+        try {
+            const visionMsgs = [
+                { role: 'user', content: [{ type: 'text', text: 'Jelaskan sedetail mungkin apa isi gambar ini untuk membantu analisis pertanian dan komoditas.' }, { type: 'image_url', image_url: { url: imageUrl } }] }
+            ];
+            // Gunakan Llama Vision statis tanpa stream
+            const visionResp = await callPuterAI({ messages: visionMsgs, model: exports.AI_MODELS.vision, apiKey: activeToken });
+            ragContext += `\n\n=== HASIL PENGAMATAN GAMBAR ===\n${visionResp.reply}\n=== AKHIR PENGAMATAN ===\n`;
+        }
+        catch (err) {
+            console.warn(`⚠️ [AI] Gagal melakukan analisis gambar tahap 1:`, err.message);
+        }
+    }
+    if (onPhaseChange)
+        onPhaseChange('[2/2] Memikirkan jawaban...');
     // 1. Ambil history dari DB jika whatsappJid ada (untuk bot)
     let dbHistory = [];
     if (whatsappJid) {
@@ -144,15 +169,14 @@ async function chatWithAI(opts) {
         (priceContext ? `\n\n=== DATA TERBARU DARI API BPS (UTAMAKAN INI) ===\n${priceContext}\n` : '') +
         creditContext +
         ragContext;
+    // Dalam model Two-Stage, model utama (Trinity) dibiarkan buta (hanya menerima string text), 
+    // karena hasil mata (Llama API) sudah masuk di ragContext
     const messages = [
         { role: 'system', content: systemMsg },
         ...finalHistory.slice(-4), // Ambil 4 pesan terakhir (hemat token)
         { role: 'user', content: message },
     ];
     try {
-        // Ambil token puter user dari DB
-        const user = await (0, knex_1.default)('users').where({ id: userId }).select('puter_token', 'role').first();
-        let activeToken = user?.puter_token;
         // Bypass untuk admin: Gunakan SYSTEM_PUTER_TOKEN jika user token tidak ada
         if ((!activeToken || activeToken === '') && user?.role === 'admin') {
             activeToken = process.env.SYSTEM_PUTER_TOKEN;

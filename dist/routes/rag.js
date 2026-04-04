@@ -144,7 +144,8 @@ router.post('/add-text', auth_1.requireAuth, async (req, res) => {
 // ─── DELETE /api/rag/documents/:id ────────────────────────────────────────
 router.delete('/documents/:id', auth_1.requireAuth, async (req, res) => {
     try {
-        const ok = await (0, ragService_1.deleteDocument)(req.params.id, req.user.id);
+        const userDb = await (0, knex_1.default)('users').where({ id: req.user.id }).select('puter_token').first();
+        const ok = await (0, ragService_1.deleteDocument)(req.params.id, req.user.id, userDb?.puter_token);
         if (!ok) {
             res.status(404).json({ success: false, error: 'Dokumen tidak ditemukan' });
             return;

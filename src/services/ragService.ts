@@ -59,7 +59,7 @@ export function chunkText(text: string, chunkSize = 800, overlap = 100): string[
 export async function storeDocument(opts: {
   userId: string;
   title: string;
-  sourceType: 'pdf' | 'docx' | 'xlsx' | 'url' | 'youtube' | 'text';
+  sourceType: 'pdf' | 'docx' | 'xlsx' | 'url' | 'youtube' | 'text' | 'image';
   sourceUrl?: string;
   content: string;
   isGlobal?: boolean;
@@ -175,9 +175,20 @@ export async function getUserDocuments(userId: string) {
     .select('id', 'title', 'original_filename', 'source_type', 'chunk_count', 'is_global', 'content_preview', 'created_at');
 }
 
-export async function deleteDocument(docId: string, userId: string): Promise<boolean> {
+export async function deleteDocument(docId: string, userId: string, puterToken?: string): Promise<boolean> {
   const doc = await db('rag_documents').where({ id: docId, user_id: userId }).first();
   if (!doc) return false;
+
+  // Hapus dari Puter FS jika token tersedia dan file original tercatat
+  if (puterToken && doc.original_filename) {
+      try {
+          // Dynamic import to avoid circular dependencies
+          const puter = (await import('@heyputer/puter.js')).default;
+          puter.setAuthToken(puterToken);
+          await puter.fs.delete(`/AgriHub_Docs/${userId}/${doc.original_filename}`).catch(() => {});
+      } catch (err) {}
+  }
+
   await db('rag_chunks').where({ document_id: docId }).del();
   await db('rag_documents').where({ id: docId }).del();
   return true;

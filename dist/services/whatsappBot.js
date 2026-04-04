@@ -50,6 +50,7 @@ const biteshipService_1 = require("./biteshipService");
 const matchingService = __importStar(require("./matchingService"));
 const transactionService = __importStar(require("./transactionService"));
 const uuid_1 = require("uuid");
+const puter_js_1 = __importDefault(require("@heyputer/puter.js"));
 // ─── Constants ───────────────────────────────────────────────────────────
 const SESSION_NAME = process.env.WA_SESSION_NAME || 'main';
 let waSocket = null;
@@ -583,15 +584,24 @@ async function handleMessage(msg) {
     const isGroup = jid.endsWith('@g.us');
     const sender = msg.key.participant || msg.key.remoteJid || '';
     console.log(`📩 [WA] Msg from ${sender} in ${jid}`);
-    const text = (msg.message?.conversation ||
+    let text = (msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
         msg.message?.imageMessage?.caption ||
         msg.message?.videoMessage?.caption ||
         '').trim();
-    if (!text) {
+    const isImageMessage = !!(msg.message?.imageMessage || msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage);
+    const isDocumentMessage = !!(msg.message?.documentMessage || msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage);
+    const isMediaMessage = isImageMessage || isDocumentMessage;
+    if (!text && !isMediaMessage) {
         // Log even if no text (maybe just a media without caption that wasn't caught by the handler)
         console.log(`[WA] Empty text or unhandled media from ${sender}`);
         return;
+    }
+    if (!text) {
+        if (isImageMessage)
+            text = "Tolong perhatikan gambar ini dan berikan analisis terkait pertanian.";
+        else if (isDocumentMessage)
+            text = "Tolong perhatikan dokumen ini dan berikan rangkuman isinya.";
     }
     const upper = text.toUpperCase();
     // ── DETEKSI MENTION YANG KUAT (Phone ID & LID) ─────────────────────────
@@ -1169,12 +1179,14 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
             const initialMsg = await sendWAMessage(jid, '⏳ _AsistenTani sedang berpikir..._');
             let currentBuffer = '';
             let editTimer = null;
-            const doEdit = async (forced = false) => {
+            let phaseText = 'AsistenTani sedang berpikir...';
+            let waitTime = 0;
+            const doEdit = async (forced = false, customDisplay) => {
                 if (!initialMsg?.key || !waSocket)
                     return;
-                if (currentBuffer.trim() === '')
+                let display = customDisplay || currentBuffer;
+                if (display.trim() === '')
                     return;
-                let display = currentBuffer;
                 // Sembunyikan tag EXEC dari pandangan saat typing
                 const execOpen = display.lastIndexOf('[EXEC:');
                 if (execOpen !== -1 && display.indexOf(']', execOpen) === -1) {
@@ -1185,13 +1197,122 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
                 }
                 catch (e) { } // Abaikan konflik edit debounced
             };
+            // Timer Polling Anti-Hang
+            const pollingTimer = setInterval(() => {
+                // Jika stream sudah berjalan, hentikan polling teks statis
+                if (currentBuffer.length > 0) {
+                    clearInterval(pollingTimer);
+                    return;
+                }
+                waitTime += 5;
+                doEdit(true, `⏳ _${phaseText} (${waitTime}s)_`);
+            }, 5000);
+            const targetDocumentMsg = msg.message?.documentMessage ? msg : (msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage ? { key: msg.key, message: msg.message?.extendedTextMessage?.contextInfo?.quotedMessage } : null);
+            const targetImageMsg = msg.message?.imageMessage ? msg : (msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ? { key: msg.key, message: msg.message?.extendedTextMessage?.contextInfo?.quotedMessage } : null);
+            const targetMsg = targetImageMsg || targetDocumentMsg;
+            let imageUrl = undefined;
+            if (targetMsg && waSocket) {
+                try {
+                    // Extract media message node
+                    const mediaNode = targetMsg.message?.imageMessage || targetMsg.message?.documentMessage || targetMsg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage || targetMsg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage;
+                    const buffer = await (0, baileys_2.downloadMediaMessage)(targetMsg, 'buffer', {}, {
+                        logger: (0, pino_1.default)({ level: 'silent' }),
+                        reuploadRequest: waSocket.updateMediaMessage
+                    });
+                    if (Buffer.isBuffer(buffer)) {
+                        const mimetype = mediaNode?.mimetype || 'application/octet-stream';
+                        if (targetImageMsg) {
+                            const base64 = buffer.toString('base64');
+                            imageUrl = `data:${mimetype};base64,${base64}`;
+                        }
+                        // [AUTO-INGESTION PIPELINE WA TO PUTER FS & LOCAL RAG]
+                        // Berjalan di latar belakang tanpa me-mute response chat saat ini
+                        if (user?.id) {
+                            const fileName = mediaNode?.fileName || `WA_Media_${Date.now()}.${mimetype.split('/')[1] || 'bin'}`;
+                            const fileSize = buffer.length;
+                            // Priority: File's native SHA256 from WA, else compute it locally
+                            const fileHash = mediaNode?.fileSha256
+                                ? Buffer.from(mediaNode.fileSha256).toString('hex')
+                                : crypto_1.default.createHash('sha256').update(buffer).digest('hex');
+                            (async () => {
+                                try {
+                                    if (await (0, ragService_1.isDuplicateDocument)(user.id, fileName, fileHash, fileSize))
+                                        return;
+                                    let docContent = '';
+                                    // A) Parser untuk Teks/Dokumen
+                                    if (targetDocumentMsg) {
+                                        const tmpPath = path_1.default.join(os_1.default.tmpdir(), fileName);
+                                        fs_1.default.writeFileSync(tmpPath, buffer);
+                                        docContent = await (0, documentParser_1.parseFile)(tmpPath);
+                                        fs_1.default.unlinkSync(tmpPath);
+                                    }
+                                    // B) Parser untuk Gambar (Menggunakan Meta Llama Vision)
+                                    else if (targetImageMsg && imageUrl && user.puter_token) {
+                                        try {
+                                            const { callPuterAI } = await Promise.resolve().then(() => __importStar(require('./aiService')));
+                                            const visionResp = await callPuterAI({
+                                                messages: [{ role: 'user', content: [{ type: 'text', text: 'Jelaskan sedetail mungkin apa isi gambar ini untuk dokumentasi.' }, { type: 'image_url', image_url: { url: imageUrl } }] }],
+                                                model: 'meta-llama/Llama-3.2-11B-Vision-Instruct:free',
+                                                apiKey: user.puter_token
+                                            });
+                                            docContent = `[GAMBAR: ${fileName}]\n${visionResp.reply}`;
+                                        }
+                                        catch (visionErr) {
+                                            console.error('Vision Parsing Error for Ingestion:', visionErr);
+                                        }
+                                    }
+                                    // Menyimpan Biner ke Puter FS Cloud (Sebagai Backup Fisik User)
+                                    if (user.puter_token) {
+                                        try {
+                                            puter_js_1.default.setAuthToken(user.puter_token);
+                                            await puter_js_1.default.fs.mkdir('/AgriHub_Docs').catch(() => { });
+                                            await puter_js_1.default.fs.mkdir(`/AgriHub_Docs/${user.id}`).catch(() => { });
+                                            await puter_js_1.default.fs.write(`/AgriHub_Docs/${user.id}/${fileName}`, buffer);
+                                        }
+                                        catch (fsErr) {
+                                            console.error('Puter FS Uptime Warning:', fsErr);
+                                        }
+                                    }
+                                    // Menyematkan Teks/Vektor ke RAG Sqlite
+                                    if (docContent.trim().length >= 10) {
+                                        await (0, ragService_1.storeDocument)({
+                                            userId: user.id,
+                                            title: fileName,
+                                            sourceType: targetImageMsg ? 'text' : (fileName.endsWith('.pdf') ? 'pdf' : 'text'),
+                                            content: docContent,
+                                            fileHash,
+                                            fileSize,
+                                            originalFilename: fileName
+                                        });
+                                        console.log(`✅ [RAG] Auto-Ingested WA Media: ${fileName}`);
+                                    }
+                                }
+                                catch (err) {
+                                    console.error('RAG Auto-Ingestion Error:', err);
+                                }
+                            })();
+                        }
+                    }
+                }
+                catch (e) {
+                    console.error('Failed to download WA media:', e);
+                }
+            }
             const aiReply = await (0, aiService_1.chatWithAI)({
-                message: cleanText || 'Halo!',
+                message: cleanText || text || 'Halo!',
                 history: [],
                 userId: targetUserId,
                 whatsappJid: jid,
                 useRag: true,
+                imageUrl,
+                onPhaseChange: (phase) => {
+                    phaseText = phase;
+                    if (currentBuffer.length === 0)
+                        doEdit(true, `⏳ _${phaseText} (${waitTime}s)_`);
+                },
                 onChunk: (chunk) => {
+                    if (pollingTimer)
+                        clearInterval(pollingTimer); // Pastikan mati
                     currentBuffer += chunk;
                     if (!editTimer) {
                         editTimer = setTimeout(() => {
@@ -1203,6 +1324,8 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
             });
             if (editTimer)
                 clearTimeout(editTimer);
+            if (pollingTimer)
+                clearInterval(pollingTimer);
             // Process Agentic Tools (Mengeksekusi logika db dan mengambil konfirmasi akhir)
             const finalReply = await processAgenticTools(jid, sender, aiReply.reply);
             // Final Edit replacing the buffer with the clean processed reply
@@ -1282,6 +1405,33 @@ async function processAgenticTools(jid, sender, aiReply) {
                         is_active: true,
                     });
                     processedReply = processedReply.replace(match[0], `\n\n✅ _Sistem: Produk ${komoditas} berhasil dipajang di toko ${store.name}! Kini otomatis terindeks sebagai Suplai untuk dicari pembeli._`);
+                    break;
+                }
+                case 'LIHAT_TOKO': {
+                    if (!user)
+                        throw new Error('Akun belum terdaftar.');
+                    const stores = await (0, knex_1.default)('stores').where({ owner_id: user.id });
+                    if (stores.length === 0) {
+                        const setupToken = jsonwebtoken_1.default.sign({ id: user.id, intent: 'setup_store' }, process.env.JWT_SECRET || 'secret', { expiresIn: '1h' });
+                        const magicLink = `https://agrihub.rumah-genbi.com/app/toko?setupToken=${setupToken}`;
+                        processedReply = processedReply.replace(match[0], `\n\nℹ️ _Sistem: Anda belum mendaftarkan Toko atau Cabang._\n👉 _Silakan buat toko Anda terlebih dahulu dengan menekan link aman ini:_ ${magicLink}`);
+                        break;
+                    }
+                    let replyText = `\n\n🏪 *Daftar Toko/Cabang Anda Terdaftar:*`;
+                    for (const store of stores) {
+                        replyText += `\n\n*${store.name}* (${store.kabupaten})`;
+                        const products = await (0, knex_1.default)('products').where({ store_id: store.id });
+                        if (products.length > 0) {
+                            replyText += `\n📦 *Produk Dijual:*`;
+                            products.forEach(p => {
+                                replyText += `\n- *${p.name}* (Stok: ${p.stock_quantity}kg @ Rp${Number(p.price_per_unit).toLocaleString('id-ID')}/kg)`;
+                            });
+                        }
+                        else {
+                            replyText += `\n_(Belum ada produk jualan, ketik: Tambah Jual [Nama] [Kategori] [Jumlah] [Harga])_`;
+                        }
+                    }
+                    processedReply = processedReply.replace(match[0], replyText);
                     break;
                 }
                 case 'CARI_PRODUK': {
