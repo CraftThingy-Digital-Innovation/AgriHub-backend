@@ -114,5 +114,61 @@ router.get('/search-area', async (req, res) => {
         res.status(500).json({ success: false, error: err.message || 'Gagal cari area' });
     }
 });
+// ─── POST /api/shipping/webhook ──────────────────────────────────────────
+router.post('/webhook', async (req, res) => {
+    try {
+        const { event, status, waybill_id, tracking_id, order_id: biteshipOrderId } = req.body;
+        console.log('Biteship webhook received:', req.body);
+        if (event !== 'track') {
+            res.status(200).json({ status: 'ignored', message: 'Not a track event' });
+            return;
+        }
+        // Cari shipment/order berdasarkan tracking_id atau waybill_id
+        const order = await (0, knex_1.default)('orders').where({ biteship_order_id: biteshipOrderId }).first()
+            || await (0, knex_1.default)('orders').where({ shipping_resi: waybill_id }).first();
+        if (!order) {
+            console.warn('Order tidak ditemukan untuk webhook resi:', waybill_id);
+            res.status(200).json({ status: 'ignored' });
+            return;
+        }
+        // Map status
+        // Biteship statuses: allocated, picking_up, picked_up, dropping_off, return_in_transit, delivered, rejected, cancelled
+        let mappedStatus = order.status;
+        let waMessage = '';
+        if (status === 'picking_up' || status === 'picked_up') {
+            mappedStatus = 'dikirim';
+            waMessage = `📦 *UPDATE PENGIRIMAN*\n\nPesanan #${order.id.slice(-8)} telah diambil oleh kurir dan sedang dalam perjalanan.`;
+        }
+        else if (status === 'dropping_off' || status === 'delivered') {
+            mappedStatus = 'selesai';
+            waMessage = `✅ *PAKET TELAH TIBA*\n\nPesanan #${order.id.slice(-8)} telah dilaporkan status DELIVERED. Harap periksa paket Anda.`;
+        }
+        if (mappedStatus !== order.status) {
+            await (0, knex_1.default)('orders').where({ id: order.id }).update({
+                status: mappedStatus,
+                updated_at: new Date().toISOString()
+            });
+            // Notify via WA
+            try {
+                const { sendWAMessage } = require('../services/whatsappBot');
+                const buyer = await (0, knex_1.default)('users').where({ id: order.buyer_id }).first();
+                if (order.group_jid) {
+                    await sendWAMessage(order.group_jid, waMessage);
+                }
+                else if (buyer?.phone) {
+                    await sendWAMessage(`${buyer.phone}@s.whatsapp.net`, waMessage);
+                }
+            }
+            catch (waErr) {
+                console.error('Biteship WA Notification Error:', waErr);
+            }
+        }
+        res.status(200).json({ success: true });
+    }
+    catch (err) {
+        console.error('Biteship Webhook Error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=shipping.js.map

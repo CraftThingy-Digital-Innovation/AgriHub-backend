@@ -146,6 +146,28 @@ router.post('/webhook', async (req, res) => {
                 status: 'pending',
                 created_at: new Date().toISOString(),
             });
+            // WA NOTIFICATION
+            try {
+                const { sendWAMessage } = require('../services/whatsappBot');
+                const buyer = await (0, knex_1.default)('users').where({ id: order.buyer_id }).first();
+                const seller = await (0, knex_1.default)('users').where({ id: order.seller_id }).first();
+                const product = await (0, knex_1.default)('products').where({ id: order.product_id }).first();
+                const notifyMsg = `✅ *PEMBAYARAN BERHASIL*\n\nPesanan #${order.id.slice(-8)} (Produk: ${product?.name})\nTelah berhasil dibayar sejumlah Rp${Number(order.total_amount).toLocaleString('id-ID')}.\n\n` +
+                    `_Penjual (${seller?.name}) harap segera mengatur pengiriman barang._`;
+                if (order.group_jid) {
+                    await sendWAMessage(order.group_jid, notifyMsg);
+                }
+                else {
+                    // Fallback to DM if not group
+                    if (buyer?.phone)
+                        await sendWAMessage(`${buyer.phone}@s.whatsapp.net`, notifyMsg);
+                    if (seller?.phone)
+                        await sendWAMessage(`${seller.phone}@s.whatsapp.net`, `💰 *PESANAN BARU DIBAYAR*\n\nPesanan #${order.id.slice(-8)} menunggu untuk dikirimkan!`);
+                }
+            }
+            catch (waErr) {
+                console.error('Failed to send WA Notification:', waErr);
+            }
         }
         res.status(200).json({ status: 'ok' });
     }

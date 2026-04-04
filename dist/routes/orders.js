@@ -45,6 +45,55 @@ router.post('/', auth_1.requireAuth, async (req, res) => {
         res.status(500).json({ success: false, error: 'Gagal buat pesanan' });
     }
 });
+/** GET /api/orders/stats — Agregasi statistik penjual (Multi-cabang) */
+router.get('/stats', auth_1.requireAuth, async (req, res) => {
+    try {
+        // 1. Distribusi Cabang (Store Contribution)
+        // Mengelompokkan berdasarkan store_id untuk pesanan berstatus selesai/dibayar/dikirim
+        const storeStatsRaw = await (0, knex_1.default)('orders')
+            .join('stores', 'orders.store_id', 'stores.id')
+            .where('orders.seller_id', req.user.id)
+            .whereIn('orders.status', ['dibayar', 'diproses', 'dikirim', 'diterima', 'selesai'])
+            .select('stores.id as store_id', 'stores.name as store_name')
+            .sum('orders.seller_net as total_net')
+            .count('orders.id as order_count')
+            .groupBy('stores.id', 'stores.name');
+        // 2. Trend Harian (7 Hari Terakhir)
+        // Menggunakan SQLite date() function
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        const dateStr = sevenDaysAgo.toISOString().split('T')[0];
+        const dailyTrendsRaw = await (0, knex_1.default)('orders')
+            .where('seller_id', req.user.id)
+            .whereIn('status', ['dibayar', 'diproses', 'dikirim', 'diterima', 'selesai'])
+            .where('created_at', '>=', dateStr)
+            .select(knex_1.default.raw('date(created_at) as order_date'))
+            .sum('seller_net as total_net')
+            .count('id as order_count')
+            .groupBy(knex_1.default.raw('date(created_at)'))
+            .orderBy('order_date', 'asc');
+        res.json({
+            success: true,
+            data: {
+                stores: storeStatsRaw.map((s) => ({
+                    store_id: s.store_id,
+                    store_name: s.store_name,
+                    total_revenue: Number(s.total_net || 0),
+                    order_count: Number(s.order_count || 0)
+                })),
+                trends: dailyTrendsRaw.map((t) => ({
+                    date: t.order_date,
+                    revenue: Number(t.total_net || 0),
+                    orders: Number(t.order_count || 0)
+                }))
+            }
+        });
+    }
+    catch (err) {
+        console.error('Stats error:', err);
+        res.status(500).json({ success: false, error: 'Gagal fetch statistik' });
+    }
+});
 /** GET /api/orders — List pesanan user */
 router.get('/', auth_1.requireAuth, async (req, res) => {
     try {

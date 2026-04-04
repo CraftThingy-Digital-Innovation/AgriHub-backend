@@ -1008,7 +1008,13 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
               await transactionService.updateShippingStatus(fullOrder.id, courier, resi);
               await sendWAMessage(jid, `✅ *Status Update:* Pesanan #${orderId} telah dikirim via ${courier} dengan resi *${resi}*.\n\nPembeli telah kami beritahu!`);
               
-              // TODO: Notif Buyer via WhatsApp
+              // Notif Buyer via WhatsApp
+              const buyer = await db('users').where({ id: fullOrder.buyer_id }).first();
+              if (fullOrder.group_jid) {
+                 await sendWAMessage(fullOrder.group_jid, `🚚 *PESANAN DIKIRIM*\n\nPesanan #${orderId} dalam perjalanan via ${courier}.\nResi: *${resi}*`);
+              } else if (buyer?.phone) {
+                 await sendWAMessage(`${buyer.phone}@s.whatsapp.net`, `🚚 *PESANAN DIKIRIM*\n\nPesanan #${orderId} telah dikirim oleh Penjual via ${courier}.\nResi: *${resi}*`);
+              }
           } catch (err) { await sendWAMessage(jid, `❌ Error: ${(err as Error).message}`); }
           return;
       }
@@ -1267,52 +1273,117 @@ async function processAgenticTools(jid: string, sender: string, aiReply: string)
 
         try {
             switch (command.toUpperCase()) {
-                case 'LAPOR_STOK': {
-                    if (!user) throw new Error('Akun tidak tertaut.');
-                    const [komoditas, jumlah, harga, kabupaten] = params;
-                    await axios.post(`${apiUrl}/matching/supply`, {
-                        komoditas,
-                        jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
-                        harga_per_kg: Number(harga.replace(/[^0-9]/g, '')),
-                        kabupaten,
-                        provinsi: '',
-                        tanggal_tersedia: new Date().toISOString().split('T')[0]
-                    }, { headers: authHeaders });
+                case 'TAMBAH_PRODUK': {
+                    if (!user) throw new Error('Akun tidak tertaut. Pilih menu LINK dahulu.');
+                    const [komoditas, kategori, jumlah, harga] = params;
+                    
+                    // Check if user has store
+                    const store = await db('stores').where({ owner_id: user.id }).first();
+                    if (!store) {
+                        // Return Magic Link (Temporary JWT logic)
+                        const setupToken = jwt.sign({ id: user.id, intent: 'setup_store', komoditas }, process.env.JWT_SECRET || 'secret', { expiresIn: '1h' });
+                        const magicLink = `https://agrihub.rumah-genbi.com/app/toko?setupToken=${setupToken}`;
+                        processedReply = processedReply.replace(match[0], `\n\n⚠️ _Sistem:_ Anda belum memiliki profil Toko/Cabang. Silakan tekan link berikut untuk mengatur lokasi Anda di Peta:\n👉 ${magicLink}\n\nProduk ${komoditas} Anda akan otomatis diunggah setelah toko selesai dibuat.`);
+                        break;
+                    }
 
-                    processedReply = processedReply.replace(match[0], `\n\n✅ _Sistem: Stok ${komoditas} berhasil dilaporkan!_`);
-                    break;
-                }
-                case 'CARI_STOK': {
-                    if (!user) throw new Error('Akun tidak tertaut.');
-                    const [komoditas, jumlah, hargaMax, kabupaten] = params;
-                    await axios.post(`${apiUrl}/matching/demand`, {
-                        komoditas,
-                        jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
-                        harga_max_per_kg: Number(hargaMax.replace(/[^0-9]/g, '')),
-                        kabupaten,
-                        deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-                    }, { headers: authHeaders });
+                    await db('products').insert({
+                        id: uuidv4(),
+                        store_id: store.id,
+                        name: komoditas,
+                        category: kategori || 'lainnya',
+                        unit: 'kg',
+                        price_per_unit: Number(harga.replace(/[^0-9]/g, '')),
+                        stock_quantity: Number(jumlah.replace(/[^0-9]/g, '')),
+                        min_order: 1,
+                        is_active: true,
+                    });
 
-                    processedReply = processedReply.replace(match[0], `\n\n✅ _Sistem: Permintaan ${komoditas} berhasil dicatat!_`);
+                    processedReply = processedReply.replace(match[0], `\n\n✅ _Sistem: Produk ${komoditas} berhasil dipajang di toko ${store.name}! Kini otomatis terindeks sebagai Suplai untuk dicari pembeli._`);
                     break;
                 }
-                case 'CEK_MATCH': {
-                    processedReply = processedReply.replace(match[0], `\n\n💡 _Gunakan perintah *LIHAT MATCH* untuk melihat daftar kecocokan terbaru._`);
-                    break;
-                }
-                case 'CEK_ONGKIR': {
-                    const [origin, destination, weight] = params;
-                    const originP = (await searchArea(origin))[0]?.postal_code;
-                    const destP = (await searchArea(destination))[0]?.postal_code;
-                    if (originP && destP) {
-                        const rates = await checkOngkir({ origin_postal_code: originP, destination_postal_code: destP, weight_gram: Number(weight) * 1000 });
-                        const rateText = rates.slice(0, 3).map(r => `• ${r.courier}: Rp${r.price.toLocaleString('id-ID')}`).join('\n');
-                        processedReply = processedReply.replace(match[0], `\n\n📦 *Estimasi Ongkir:* \n${rateText}`);
+                case 'CARI_PRODUK': {
+                    const [komoditas, hargaMaxRaw] = params;
+                    const limitHarga = hargaMaxRaw ? Number(hargaMaxRaw.replace(/[^0-9]/g, '')) : 9999999;
+                    
+                    // Simple search query matching product name and active status
+                    const results = await db('products')
+                        .join('stores', 'products.store_id', 'stores.id')
+                        .join('users', 'stores.owner_id', 'users.id')
+                        .where('products.is_active', true)
+                        .andWhere('products.name', 'like', `%${komoditas}%`)
+                        .andWhere('products.price_per_unit', '<=', limitHarga)
+                        .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'users.name as seller_name')
+                        .limit(3);
+
+                    if (results.length === 0) {
+                        processedReply = processedReply.replace(match[0], `\n\nℹ️ _Sistem: Maaf, tidak ditemukan stok ${komoditas} yang tersedia saat ini._`);
+                    } else {
+                        const list = results.map(r => `• *${r.name}* (Sisa: ${r.stock_quantity}kg)\n  💰 Rp${Number(r.price_per_unit).toLocaleString('id-ID')}/kg\n  🏪 ${r.store_name} (${r.kabupaten})\n  📦 ID: \`${r.id.split('-')[0]}\``).join('\n\n');
+                        processedReply = processedReply.replace(match[0], `\n\n🛒 *Hasil Pencarian Produk AgriHub:*\n\n${list}\n\n👉 _Ingin pesan? Ketik:* [Pesan ID_Produk Jumlah] (Contoh: Pesan ${results[0].id.split('-')[0]} 10)_`);
                     }
                     break;
                 }
-                case 'BELI_MATCH': {
-                    processedReply = processedReply.replace(match[0], `\n\n👉 _Ketik *BELI ${params[0]}* untuk melanjutkan ke pilihan kurir._`);
+                case 'CEK_PENGIRIMAN': {
+                    // Cek opsi kurir
+                    const [productIdRaw, jumlah] = params;
+                    // match uuid start
+                    const prod = await db('products').where('id', 'like', `${productIdRaw}%`).first();
+                    if (!prod) {
+                        processedReply = processedReply.replace(match[0], `\n\n❌ _Sistem: Produk ID tidak valid._`);
+                        break;
+                    }
+                    // Opsi kurir disimulasikan / dilompati karena setup Biteship butuh origin/dest valid
+                    processedReply = processedReply.replace(match[0], `\n\n🚚 _Opsi Kurir yang Tersedia (Estimasi):_\n1. JNE Reguler\n2. JNT Express\n3. AnterAja\n\n👉 _Lanjutkan ke pembayaran? balas dengan *Checkout ${prod.id.split('-')[0]} ${jumlah} jne*_`);
+                    break;
+                }
+                case 'CHECKOUT_PESANAN': {
+                    if (!user) throw new Error('Akun belum terdaftar.');
+                    const [productIdRaw, jumlah, kurir] = params;
+                    const prod = await db('products').join('stores', 'products.store_id', 'stores.id').where('products.id', 'like', `${productIdRaw}%`).select('products.*', 'stores.owner_id').first();
+                    
+                    if (!prod) {
+                        processedReply = processedReply.replace(match[0], `\n\n❌ _Sistem: Produk tidak ditemukan / stok habis._`);
+                        break;
+                    }
+                    
+                    const qty = Number(jumlah);
+                    const subtotal = qty * prod.price_per_unit;
+                    // Simulated shipping flat rate
+                    const shippingFee = 15000;
+                    const platformFee = subtotal * 0.02;
+                    const ppn = (subtotal + shippingFee) * 0.11;
+                    const total = subtotal + shippingFee + platformFee + ppn;
+
+                    const orderId = uuidv4();
+                    await db('orders').insert({
+                        id: orderId,
+                        buyer_id: user.id,
+                        seller_id: prod.owner_id,
+                        store_id: prod.store_id,
+                        product_id: prod.id,
+                        quantity: qty,
+                        unit_price: prod.price_per_unit,
+                        total_amount: total,
+                        platform_fee: platformFee,
+                        ppn_fee: ppn,
+                        seller_net: subtotal - platformFee,
+                        status: 'pending',
+                        group_jid: jid.endsWith('@g.us') ? jid : null
+                    });
+
+                    // Generate a simulated Midtrans payment link
+                    const paymentToken = jwt.sign({ order_id: orderId }, process.env.JWT_SECRET || 'secret', { expiresIn: '1d' });
+                    const payLink = `https://agrihub.rumah-genbi.com/pay/${orderId}?token=${paymentToken}`;
+
+                    const invoiceStr = `🧾 *INVOICE PEMBAYARAN*\n\n`
+                                     + `📦 Produk: ${prod.name} (${qty}kg)\n`
+                                     + `🚚 Ekspedisi: ${kurir.toUpperCase()}\n`
+                                     + `💵 Total: *Rp${total.toLocaleString('id-ID')}*\n\n`
+                                     + `Silakan bayar menggunakan Link Midtrans berikut untuk keamanan transaksi (E-Wallet/VA Code):\n👉 ${payLink}\n\n`
+                                     + `_Dana Anda akan ditahan oleh sistem AgriHub hingga barang tiba dengan aman._`;
+
+                    processedReply = processedReply.replace(match[0], `\n\n${invoiceStr}`);
                     break;
                 }
                 case 'CEK_TOKEN': {

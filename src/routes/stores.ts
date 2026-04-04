@@ -17,31 +17,49 @@ router.get('/', async (req, res): Promise<void> => {
   } catch { res.status(500).json({ success: false, error: 'Gagal fetch toko' }); }
 });
 
-/** GET /api/stores/me — Toko milik sendiri */
+/** GET /api/stores/me — Toko milik sendiri (Utama & Cabang) */
 router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const store = await db('stores').where({ owner_id: req.user!.id }).first();
-    res.json({ success: true, data: store || null });
+    const stores = await db('stores').where({ owner_id: req.user!.id });
+    res.json({ success: true, data: stores });
   } catch { res.status(500).json({ success: false, error: 'Gagal fetch toko' }); }
 });
 
-/** POST /api/stores — Daftar toko baru */
+/** POST /api/stores — Daftar toko (Utama atau Cabang) */
 router.post('/', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const existing = await db('stores').where({ owner_id: req.user!.id }).first();
-    if (existing) {
-      res.status(409).json({ success: false, error: 'Anda sudah memiliki toko' });
-      return;
+    const { 
+      name, kabupaten, provinsi, kecamatan, postal_code, address, 
+      area_id, product_types, description, latitude, longitude,
+      parent_store_id 
+    } = req.body;
+
+    if (!parent_store_id) {
+      // Jika tidak ada parent, ini adalah toko utama. User hanya boleh punya 1 toko utama.
+      const existingMain = await db('stores').where({ owner_id: req.user!.id, is_main_branch: true }).first();
+      if (existingMain) {
+        res.status(409).json({ success: false, error: 'Anda sudah memiliki toko utama. Silakan tambahkan sebagai cabang.' });
+        return;
+      }
+    } else {
+      // Cabang. Pastikan parent_store_id valid dan dimiliki oleh user.
+      const parentStore = await db('stores').where({ id: parent_store_id, owner_id: req.user!.id }).first();
+      if (!parentStore) {
+        res.status(404).json({ success: false, error: 'Toko utama tidak referensial atau bukan milik Anda' });
+        return;
+      }
     }
-    const { name, kabupaten, provinsi, kecamatan, postal_code, address, area_id, product_types, description, latitude, longitude } = req.body;
+
     if (!name || !kabupaten || !provinsi) {
       res.status(400).json({ success: false, error: 'name, kabupaten, provinsi wajib' });
       return;
     }
+
     // Generate store code unik
     const storeCode = `TM-${Math.floor(1000 + Math.random() * 9000)}`;
     const id = uuidv4();
     const now = new Date().toISOString();
+    
     await db('stores').insert({
       id, owner_id: req.user!.id, store_code: storeCode,
       name, kabupaten, provinsi,
@@ -52,11 +70,16 @@ router.post('/', requireAuth, async (req: AuthRequest, res: Response): Promise<v
       latitude: latitude || null, longitude: longitude || null,
       product_types: JSON.stringify(product_types || []),
       description: description || null,
+      parent_store_id: parent_store_id || null,
+      is_main_branch: parent_store_id ? false : true,
       is_active: true, rating: 0, total_orders: 0,
       created_at: now, updated_at: now,
     });
     res.status(201).json({ success: true, data: await db('stores').where({ id }).first() });
-  } catch { res.status(500).json({ success: false, error: 'Gagal buat toko' }); }
+  } catch (err: any) { 
+    console.error('Create store error:', err);
+    res.status(500).json({ success: false, error: 'Gagal buat toko' }); 
+  }
 });
 
 /** PATCH /api/stores/:id */
