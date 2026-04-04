@@ -69,7 +69,7 @@ router.post('/create', auth_1.requireAuth, async (req, res) => {
                     }] : []),
             ],
             callbacks: {
-                finish: `${process.env.CLIENT_URL || 'http://localhost:5173'}/app/pesanan`,
+                finish: `${process.env.CLIENT_URL || 'https://agrihub.rumah-genbi.com'}/app/pesanan`,
             },
         };
         const transaction = await snap.createTransaction(transactionDetails);

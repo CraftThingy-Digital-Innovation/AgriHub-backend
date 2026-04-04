@@ -47,7 +47,7 @@ const config = client === 'sqlite3'
     ? {
         client: 'sqlite3',
         connection: {
-            filename: path_1.default.resolve(process.cwd(), process.env.DATABASE_URL || './dev.db'),
+            filename: path_1.default.resolve(process.cwd(), process.env.DATABASE_URL || './dev.sqlite'),
         },
         useNullAsDefault: true,
         migrations: {

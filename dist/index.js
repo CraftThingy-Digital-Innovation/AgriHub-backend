@@ -42,7 +42,7 @@ app.use((0, helmet_1.default)({
     referrerPolicy: { policy: 'no-referrer-when-downgrade' }
 }));
 app.use((0, cors_1.default)({
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: process.env.CLIENT_URL || 'https://agrihub.rumah-genbi.com',
     credentials: true,
 }));
 app.use(express_1.default.json({ limit: '10mb' }));

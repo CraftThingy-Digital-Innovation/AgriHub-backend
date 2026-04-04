@@ -13,6 +13,8 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import qrcodeTerminal from 'qrcode-terminal';
 import db from '../config/knex';
+import axios from 'axios';
+import jwt from 'jsonwebtoken';
 import { chatWithAI, checkGroupCredit, deductGroupCredit, checkPuterBalance } from './aiService';
 import { checkOngkir, searchArea } from './biteshipService';
 import * as matchingService from './matchingService';
@@ -20,6 +22,7 @@ import * as transactionService from './transactionService';
 import { v4 as uuidv4 } from 'uuid';
 
 // ─── Constants ───────────────────────────────────────────────────────────
+const SESSION_NAME = process.env.WA_SESSION_NAME || 'main';
 let waSocket: WASocket | null = null;
 let isConnected = false;
 let qrCode: string | null = '';
@@ -127,7 +130,7 @@ async function useDatabaseAuthState(): Promise<{ state: AuthenticationState, sav
     await db('whatsapp_auth').where({ category, key_id: keyId }).delete();
   };
 
-  let creds: AuthenticationCreds = await readData('creds', 'main') || initAuthCreds();
+  let creds: AuthenticationCreds = await readData('creds', SESSION_NAME) || initAuthCreds();
 
   return {
     state: {
@@ -161,7 +164,7 @@ async function useDatabaseAuthState(): Promise<{ state: AuthenticationState, sav
       }
     },
     saveCreds: async () => {
-      await writeData(creds, 'creds', 'main');
+      await writeData(creds, 'creds', SESSION_NAME);
     }
   };
 }
@@ -217,7 +220,7 @@ export async function connectWhatsApp(): Promise<void> {
     }
 
     // ─── Global Mutex (DB Lock) ─────────────────────────────
-    const lockKey = 'whatsapp_bot_main';
+    const lockKey = `whatsapp_bot_${SESSION_NAME}`;
     const nowUnix = Math.floor(Date.now() / 1000);
 
     // Clean up old locks (> 30s)
@@ -641,9 +644,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
     mentionedJids.some(mj => botJids.includes(mj)) ||
     text.includes(`@${botId}`) ||
     (botLid && text.includes(`@${botLid}`)) ||
-    cleanText !== text ||
-    (isGroup && text.toLowerCase().includes('asistentani')) ||
-    (isGroup && text.toLowerCase().includes('bot'));
+    cleanText !== text;
 
   if (isGroup) {
     // Log sudah di atas, ini untuk detail tambahan
@@ -1250,6 +1251,14 @@ async function processAgenticTools(jid: string, sender: string, aiReply: string)
     let processedReply = aiReply;
     const user = await db('users').where({ whatsapp_lid: sender }).first() || await db('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
 
+    // Sandbox Auth Header
+    let authHeaders = {};
+    if (user) {
+        const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'secret', { expiresIn: '5m' });
+        authHeaders = { Authorization: `Bearer ${token}` };
+    }
+    const apiUrl = `http://localhost:${process.env.PORT || 3000}/api`;
+
     for (const match of matches) {
         const [, command, paramsRaw] = match;
         const params = paramsRaw.split('|').map(p => p.trim());
@@ -1261,25 +1270,29 @@ async function processAgenticTools(jid: string, sender: string, aiReply: string)
                 case 'LAPOR_STOK': {
                     if (!user) throw new Error('Akun tidak tertaut.');
                     const [komoditas, jumlah, harga, kabupaten] = params;
-                    await matchingService.reportSupply(user.id, {
+                    await axios.post(`${apiUrl}/matching/supply`, {
                         komoditas,
                         jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
                         harga_per_kg: Number(harga.replace(/[^0-9]/g, '')),
                         kabupaten,
-                        provinsi: ''
-                    });
+                        provinsi: '',
+                        tanggal_tersedia: new Date().toISOString().split('T')[0]
+                    }, { headers: authHeaders });
+
                     processedReply = processedReply.replace(match[0], `\n\n✅ _Sistem: Stok ${komoditas} berhasil dilaporkan!_`);
                     break;
                 }
                 case 'CARI_STOK': {
                     if (!user) throw new Error('Akun tidak tertaut.');
                     const [komoditas, jumlah, hargaMax, kabupaten] = params;
-                    await matchingService.reportDemand(user.id, {
+                    await axios.post(`${apiUrl}/matching/demand`, {
                         komoditas,
                         jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
                         harga_max_per_kg: Number(hargaMax.replace(/[^0-9]/g, '')),
-                        kabupaten
-                    });
+                        kabupaten,
+                        deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+                    }, { headers: authHeaders });
+
                     processedReply = processedReply.replace(match[0], `\n\n✅ _Sistem: Permintaan ${komoditas} berhasil dicatat!_`);
                     break;
                 }

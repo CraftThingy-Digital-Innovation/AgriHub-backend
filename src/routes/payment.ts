@@ -62,7 +62,7 @@ router.post('/create', requireAuth, async (req: AuthRequest, res: Response): Pro
         }] : []),
       ],
       callbacks: {
-        finish: `${process.env.CLIENT_URL || 'http://localhost:5173'}/app/pesanan`,
+        finish: `${process.env.CLIENT_URL || 'https://agrihub.rumah-genbi.com'}/app/pesanan`,
       },
     };
 

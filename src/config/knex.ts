@@ -11,7 +11,7 @@ const config: knex.Knex.Config = client === 'sqlite3'
   ? {
       client: 'sqlite3',
       connection: {
-        filename: path.resolve(process.cwd(), process.env.DATABASE_URL || './dev.db'),
+        filename: path.resolve(process.cwd(), process.env.DATABASE_URL || './dev.sqlite'),
       },
       useNullAsDefault: true,
       migrations: {
