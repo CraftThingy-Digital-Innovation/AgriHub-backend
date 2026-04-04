@@ -10,7 +10,8 @@ import db from '../config/knex';
 // Model via Puter — sesuai agri-hub-plan section 13 AI COST
 // Sumber harga: developer.puter.com/ai/models
 export const AI_MODELS = {
-  default:  'qwen/qwen3.5-flash-02-23',       // $0.07/M in, $0.26/M out — Default chat & WA bot
+  // default:  'qwen/qwen3.5-flash-02-23',       // $0.07/M in, $0.26/M out — Default chat & WA bot
+  default:  'arcee-ai/trinity-large-preview:free', // GRATIS — fallback jika credits menipis
   advanced: 'qwen/qwen3-235ba22b-2507',        // $0.07/M in, $0.10/M out — RAG kompleks, value terbaik
   simple:   'nvidia/nemotron-3-nano-30b-a3b',  // $0.05/M in, $0.20/M out — Query sederhana, 1M ctx
   deep:     'deepseek/deepseekv3.2',           // $0.26/M in, $0.38/M out — Analisis dokumen kompleks
@@ -73,8 +74,9 @@ export async function chatWithAI(opts: {
   whatsappJid?: string;
   useRag?: boolean;
   model?: string;
+  onChunk?: (chunk: string) => void;
 }): Promise<{ reply: string; ragSources: string[]; tokensUsed?: number }> {
-  const { message, history: providedHistory, userId, whatsappJid, useRag = true, model = AI_MODELS.default } = opts;
+  const { message, history: providedHistory, userId, whatsappJid, useRag = true, model = AI_MODELS.default, onChunk } = opts;
 
   let ragContext = '';
   const ragSources: string[] = [];
@@ -189,7 +191,7 @@ export async function chatWithAI(opts: {
       return { reply: '❌ Anda belum menghubungkan akun Puter untuk fitur AI. Silakan hubungkan di Pengaturan Chat.', ragSources: [] };
     }
 
-    const response = await callPuterAI({ messages, model, apiKey: activeToken });
+    const response = await callPuterAI({ messages, model, apiKey: activeToken, onChunk });
 
     return { reply: response.reply, ragSources, tokensUsed: response.tokensUsed };
   } catch (err) {
@@ -234,8 +236,9 @@ async function callPuterAI(opts: {
   messages: ChatMessage[];
   model: string;
   apiKey: string;
+  onChunk?: (chunk: string) => void;
 }): Promise<{ reply: string; tokensUsed?: number }> {
-  const { messages, model, apiKey } = opts;
+  const { messages, model, apiKey, onChunk } = opts;
   
   if (!apiKey) throw new Error('Puter API Key (token) is missing');
   
@@ -243,8 +246,27 @@ async function callPuterAI(opts: {
   puter.setAuthToken(apiKey);
 
   try {
-    // Timeout 90 detik — dengan max_tokens:1500 model apapun harusnya selesai <20s
-    // Jika lewat 90s hampir pasti hang, bukan response panjang.
+    if (onChunk) {
+        // Mode Streaming
+        const responseGenerator = await puter.ai.chat(messages, {
+            model,
+            max_tokens: 1500,
+            temperature: 0.7,
+            stream: true
+        });
+
+        let fullReply = '';
+        for await (const part of responseGenerator) {
+            const chunkText = (typeof part === 'string') ? part : (part as any)?.text || (part as any)?.message?.content || '';
+            if (chunkText) {
+                fullReply += chunkText;
+                onChunk(chunkText);
+            }
+        }
+        return { reply: fullReply };
+    }
+
+    // Mode Standard
     const aiCallPromise = puter.ai.chat(messages, {
         model,
         max_tokens: 1500,

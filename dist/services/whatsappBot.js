@@ -542,7 +542,7 @@ function getWAStatus() {
 /**
  * Mengirim pesan WhatsApp dengan proteksi koneksi (Wait & Retry)
  */
-async function sendWAMessage(jid, text) {
+async function sendWAMessage(jid, text, options) {
     // Jika sedang connecting, tunggu sebentar (max 15 detik)
     if (!isConnected && isConnecting) {
         let waitCount = 0;
@@ -553,10 +553,10 @@ async function sendWAMessage(jid, text) {
     }
     if (!waSocket || !isConnected) {
         console.error(`❌ [WA] Failed to send message to ${jid}: Bot NOT CONNECTED after wait.`);
-        return;
+        return undefined;
     }
     try {
-        await waSocket.sendMessage(jid, { text });
+        return await waSocket.sendMessage(jid, { text, ...options });
     }
     catch (err) {
         // If it fails with "Connection Closed", maybe it just dropped. Try once more if isConnected is still true or becomes true.
@@ -566,13 +566,13 @@ async function sendWAMessage(jid, text) {
             await new Promise(r => setTimeout(r, 2000));
             if (waSocket && isConnected) {
                 try {
-                    await waSocket.sendMessage(jid, { text });
-                    return;
+                    return await waSocket.sendMessage(jid, { text, ...options });
                 }
                 catch { }
             }
         }
         console.error(`❌ [WA] Failed to send message to ${jid}:`, err);
+        return undefined;
     }
 }
 // ─── Message Handler Logic ──────────────────────────────────────────────
@@ -1165,17 +1165,57 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
             created_at: new Date().toISOString()
         });
         if (isMentioned || !isGroup) {
-            // Kirim ack langsung agar user tahu bot sedang bekerja
-            await sendWAMessage(jid, '⏳ _AsistenTani sedang memikirkan jawaban..._');
+            // Kirim pesan inisial yang akan diedit nanti
+            const initialMsg = await sendWAMessage(jid, '⏳ _AsistenTani sedang berpikir..._');
+            let currentBuffer = '';
+            let editTimer = null;
+            const doEdit = async (forced = false) => {
+                if (!initialMsg?.key || !waSocket)
+                    return;
+                if (currentBuffer.trim() === '')
+                    return;
+                let display = currentBuffer;
+                // Sembunyikan tag EXEC dari pandangan saat typing
+                const execOpen = display.lastIndexOf('[EXEC:');
+                if (execOpen !== -1 && display.indexOf(']', execOpen) === -1) {
+                    display = display.substring(0, execOpen) + '\n⏳ _(Memproses pesanan internal...)_';
+                }
+                try {
+                    await waSocket.sendMessage(jid, { text: display + (forced ? '' : ' ✍️'), edit: initialMsg.key });
+                }
+                catch (e) { } // Abaikan konflik edit debounced
+            };
             const aiReply = await (0, aiService_1.chatWithAI)({
                 message: cleanText || 'Halo!',
                 history: [],
                 userId: targetUserId,
                 whatsappJid: jid,
-                useRag: true
+                useRag: true,
+                onChunk: (chunk) => {
+                    currentBuffer += chunk;
+                    if (!editTimer) {
+                        editTimer = setTimeout(() => {
+                            doEdit(false);
+                            editTimer = null;
+                        }, 1800); // 1.8s interval aman anti rate-limit WA
+                    }
+                }
             });
-            // Process Agentic Tools
+            if (editTimer)
+                clearTimeout(editTimer);
+            // Process Agentic Tools (Mengeksekusi logika db dan mengambil konfirmasi akhir)
             const finalReply = await processAgenticTools(jid, sender, aiReply.reply);
+            // Final Edit replacing the buffer with the clean processed reply
+            if (initialMsg?.key && waSocket) {
+                try {
+                    await waSocket.sendMessage(jid, { text: `🌱 ${finalReply}`, edit: initialMsg.key });
+                }
+                catch (e) { }
+            }
+            else {
+                // Fallback if edit fails
+                await sendWAMessage(jid, `🌱 ${finalReply}`);
+            }
             // 2. Simpan balasan AI ke DB
             await (0, knex_1.default)('chats').insert({
                 id: (0, uuid_1.v4)(),
@@ -1185,7 +1225,6 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
                 content: finalReply,
                 created_at: new Date().toISOString()
             });
-            await sendWAMessage(jid, `🌱 ${finalReply}`);
         }
     }
     catch (err) {

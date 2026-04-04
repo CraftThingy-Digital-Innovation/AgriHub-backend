@@ -551,7 +551,7 @@ export function getWAStatus() {
 /**
  * Mengirim pesan WhatsApp dengan proteksi koneksi (Wait & Retry)
  */
-export async function sendWAMessage(jid: string, text: string): Promise<void> {
+export async function sendWAMessage(jid: string, text: string, options?: any): Promise<any> {
   // Jika sedang connecting, tunggu sebentar (max 15 detik)
   if (!isConnected && isConnecting) {
     let waitCount = 0;
@@ -563,11 +563,11 @@ export async function sendWAMessage(jid: string, text: string): Promise<void> {
 
   if (!waSocket || !isConnected) {
     console.error(`❌ [WA] Failed to send message to ${jid}: Bot NOT CONNECTED after wait.`);
-    return;
+    return undefined;
   }
 
   try {
-    await waSocket.sendMessage(jid, { text });
+    return await waSocket.sendMessage(jid, { text, ...options });
   } catch (err) {
     // If it fails with "Connection Closed", maybe it just dropped. Try once more if isConnected is still true or becomes true.
     const errMsg = (err as Error).message;
@@ -575,10 +575,11 @@ export async function sendWAMessage(jid: string, text: string): Promise<void> {
       console.warn(`⚠️ [WA] Send failed (${errMsg}), retrying once in 2s...`);
       await new Promise(r => setTimeout(r, 2000));
       if (waSocket && isConnected) {
-        try { await waSocket.sendMessage(jid, { text }); return; } catch { }
+        try { return await waSocket.sendMessage(jid, { text, ...options }); } catch { }
       }
     }
     console.error(`❌ [WA] Failed to send message to ${jid}:`, err);
+    return undefined;
   }
 }
 
@@ -1209,19 +1210,59 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
     });
 
     if (isMentioned || !isGroup) {
-      // Kirim ack langsung agar user tahu bot sedang bekerja
-      await sendWAMessage(jid, '⏳ _AsistenTani sedang memikirkan jawaban..._');
+      // Kirim pesan inisial yang akan diedit nanti
+      const initialMsg = await sendWAMessage(jid, '⏳ _AsistenTani sedang berpikir..._');
+
+      let currentBuffer = '';
+      let editTimer: any = null;
+
+      const doEdit = async (forced = false) => {
+          if (!initialMsg?.key || !waSocket) return;
+          if (currentBuffer.trim() === '') return;
+          
+          let display = currentBuffer;
+          // Sembunyikan tag EXEC dari pandangan saat typing
+          const execOpen = display.lastIndexOf('[EXEC:');
+          if (execOpen !== -1 && display.indexOf(']', execOpen) === -1) {
+              display = display.substring(0, execOpen) + '\n⏳ _(Memproses pesanan internal...)_';
+          }
+
+          try { 
+              await waSocket.sendMessage(jid, { text: display + (forced ? '' : ' ✍️'), edit: initialMsg.key }); 
+          } catch (e) {} // Abaikan konflik edit debounced
+      };
 
       const aiReply = await chatWithAI({
         message: cleanText || 'Halo!',
         history: [],
         userId: targetUserId,
         whatsappJid: jid,
-        useRag: true
+        useRag: true,
+        onChunk: (chunk: string) => {
+            currentBuffer += chunk;
+            if (!editTimer) {
+                editTimer = setTimeout(() => {
+                    doEdit(false);
+                    editTimer = null;
+                }, 1800); // 1.8s interval aman anti rate-limit WA
+            }
+        }
       });
 
-      // Process Agentic Tools
+      if (editTimer) clearTimeout(editTimer);
+
+      // Process Agentic Tools (Mengeksekusi logika db dan mengambil konfirmasi akhir)
       const finalReply = await processAgenticTools(jid, sender, aiReply.reply);
+
+      // Final Edit replacing the buffer with the clean processed reply
+      if (initialMsg?.key && waSocket) {
+          try {
+              await waSocket.sendMessage(jid, { text: `🌱 ${finalReply}`, edit: initialMsg.key });
+          } catch(e) {}
+      } else {
+          // Fallback if edit fails
+          await sendWAMessage(jid, `🌱 ${finalReply}`);
+      }
 
       // 2. Simpan balasan AI ke DB
       await db('chats').insert({
@@ -1232,8 +1273,6 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
         content: finalReply,
         created_at: new Date().toISOString()
       });
-
-      await sendWAMessage(jid, `🌱 ${finalReply}`);
     }
 
   } catch (err) {
