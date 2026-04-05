@@ -11,15 +11,17 @@ export async function syncRegions() {
     const provinces = provRes.data?.data || [];
 
     for (const prov of provinces) {
-      const regRes = await axios.get(`${BASE_URL}/Home/GetRegencyAll?ref_prov_id=${prov.id}`);
+      if (prov.province_id === 0) continue; // Skip "Semua Provinsi"
+      const regRes = await axios.get(`${BASE_URL}/Home/GetRegencyAll?ref_prov_id=${prov.province_id}`);
       const regencies = regRes.data?.data || [];
 
       for (const reg of regencies) {
+        if (reg.regency_id === 0) continue; // Skip "Semua Kota"
         await db('pihps_regions').insert({
-          prov_id: parseInt(prov.id, 10),
-          prov_name: prov.name,
-          reg_id: parseInt(reg.id, 10),
-          reg_name: reg.name,
+          prov_id: parseInt(prov.province_id, 10),
+          prov_name: prov.province_name,
+          reg_id: parseInt(reg.regency_id, 10),
+          reg_name: reg.regency_name,
         }).onConflict(['prov_id', 'reg_id']).merge();
       }
     }
