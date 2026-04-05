@@ -146,7 +146,15 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     }
 
     console.log(`[Login] ${field} '${value}' SUCCESS.`);
-    res.json({ success: true, data: { user: safeUser(user), token: signToken(user.id) } });
+    res.json({ 
+      success: true, 
+      data: { 
+        user: safeUser(user), 
+        token: signToken(user.id),
+        needs_phone_verify: !user.phone_verified,
+        needs_email_verify: !!user.email && !user.email_verified
+      } 
+    });
   } catch (err) {
     console.error('[login]', err);
     res.status(500).json({ success: false, error: 'Gagal login' });
