@@ -23,38 +23,57 @@ export async function initCronJobs() {
       await syncRegions();
     }
 
-    const priceCount = await db('pihps_prices').count('date as count').first();
-    const isPricesEmpty = !priceCount || Number(priceCount.count) === 0;
+    const priceMax = await db('pihps_prices').max('date as maxDate').first();
+    const isPricesEmpty = !priceMax || !priceMax.maxDate;
+
+    const today = new Date();
+    let backfillStart = new Date();
+    backfillStart.setFullYear(today.getFullYear() - 5); // Default 5 years ago
+    
+    let needsBackfill = false;
 
     if (isPricesEmpty) {
-      console.log('⚠️ PIHPS Prices table is empty. Starting 5-Years MEGA BACKFILL (Chunked by Year)...');
-      // Break down 5 years into 1-year chunks to prevent BI API timeout
+      console.log('⚠️ PIHPS Prices table is empty. Starting 5-Years MEGA BACKFILL...');
+      needsBackfill = true;
+    } else {
+      const maxDbDate = new Date(String(priceMax.maxDate));
+      const diffDays = Math.floor((today.getTime() - maxDbDate.getTime()) / (1000 * 60 * 60 * 24));
+      
+      if (diffDays > 14) {
+        console.log(`⚠️ PIHPS Database gap detected! Last data was ${diffDays} days ago. Resuming backfill...`);
+        backfillStart = maxDbDate;
+        needsBackfill = true;
+      } else {
+        console.log('✅ PIHPS Database is up-to-date. Skipping mega-backfill.');
+      }
+    }
+
+    if (needsBackfill) {
       (async () => {
         try {
-          const today = new Date();
-          for (let i = 4; i >= 0; i--) {
-            const startDate = new Date();
-            startDate.setFullYear(today.getFullYear() - (i + 1));
-            
-            const endDate = new Date();
-            endDate.setFullYear(today.getFullYear() - i);
-            if (i === 0) endDate.setTime(today.getTime()); // Up to today for the last chunk
+          const startYear = backfillStart.getFullYear();
+          const endYear = today.getFullYear();
 
-            const startStr = formatDate(startDate);
-            const endStr = formatDate(endDate);
+          for (let yr = startYear; yr <= endYear; yr++) {
+            let chunkStart = new Date(yr, 0, 1); // Jan 1st
+            if (chunkStart < backfillStart) chunkStart = backfillStart;
+
+            let chunkEnd = new Date(yr, 11, 31); // Dec 31st
+            if (chunkEnd > today) chunkEnd = today;
+
+            const startStr = formatDate(chunkStart);
+            const endStr = formatDate(chunkEnd);
             
             console.log(`[PIHPS] Backfilling chunk: ${startStr} to ${endStr}`);
             await scrapeMatrixData({ startDate: startStr, endDate: endStr, priceType: 1 });
             console.log(`[PIHPS] Completed chunk: ${startStr} to ${endStr}. Resting 10s...`);
             await new Promise(r => setTimeout(r, 10000));
           }
-          console.log('🎉 5-Years MEGA BACKFILL Complete!');
+          console.log('🎉 PIHPS Historical Backfill Complete!');
         } catch (err) {
           console.error('❌ Error during MEGA BACKFILL:', err);
         }
       })();
-    } else {
-       console.log('✅ PIHPS Database has existing data. Skipping initial mega-backfill.');
     }
   } catch (err) {
     console.error('❌ Error during Initial Data Check:', err);
