@@ -97,5 +97,63 @@ router.get('/map-data', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch map data' });
     }
 });
+// [GET] /api/pihps/inflation — Hitung inflasi harga pangan antar dua tanggal
+// Query params: date_now, date_prev, commodity (opsional)
+router.get('/inflation', async (req, res) => {
+    try {
+        const { date_now, date_prev, commodity } = req.query;
+        // Default: date_now = tanggal terbaru, date_prev = 30 hari sebelumnya
+        const latestRow = await (0, knex_1.default)('pihps_prices').max('date as maxDate').first();
+        const latestDate = date_now || latestRow?.maxDate || new Date().toISOString().slice(0, 10);
+        const prevDate = (() => {
+            if (date_prev)
+                return date_prev;
+            const d = new Date(latestDate);
+            d.setFullYear(d.getFullYear() - 1); // default YoY
+            return d.toISOString().slice(0, 10);
+        })();
+        // Ambil rata-rata harga per komoditas untuk masing-masing tanggal
+        const buildQuery = (date) => {
+            let q = (0, knex_1.default)('pihps_prices')
+                .where('date', date)
+                .avg('price as avg_price')
+                .select('commodity_name')
+                .groupBy('commodity_name');
+            if (commodity)
+                q = q.where('commodity_name', 'like', `%${commodity}%`);
+            return q;
+        };
+        const [nowData, prevData] = await Promise.all([
+            buildQuery(latestDate),
+            buildQuery(prevDate),
+        ]);
+        // Gabungkan dan hitung inflasi
+        const prevMap = {};
+        prevData.forEach((r) => { prevMap[r.commodity_name] = Number(r.avg_price); });
+        const result = nowData
+            .map((r) => {
+            const prev = prevMap[r.commodity_name];
+            const now = Number(r.avg_price);
+            const change_pct = prev ? ((now - prev) / prev) * 100 : null;
+            return {
+                commodity_name: r.commodity_name,
+                price_now: Math.round(now),
+                price_prev: prev ? Math.round(prev) : null,
+                change_pct: change_pct !== null ? Math.round(change_pct * 100) / 100 : null,
+                trend: change_pct === null ? 'no_data' : change_pct > 0 ? 'up' : change_pct < 0 ? 'down' : 'stable',
+            };
+        })
+            .filter((r) => r.price_prev !== null)
+            .sort((a, b) => Math.abs(b.change_pct) - Math.abs(a.change_pct));
+        res.json({
+            status: 'success',
+            data: { date_now: latestDate, date_prev: prevDate, items: result }
+        });
+    }
+    catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Failed to calculate inflation' });
+    }
+});
 exports.default = router;
 //# sourceMappingURL=pihps.js.map

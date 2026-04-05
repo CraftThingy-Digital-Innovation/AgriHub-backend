@@ -7,6 +7,18 @@ import { connectWhatsApp } from '../services/whatsappBot';
 
 const router = Router();
 
+// ─── GET /api/admin/settings/public — Tanpa auth, hanya expose key yang is_secret=false ──
+router.get('/settings/public', async (_req, res: Response): Promise<void> => {
+  try {
+    const settings = await db('app_settings')
+      .where({ is_secret: false })
+      .select('key', 'value');
+    const map: Record<string, string> = {};
+    settings.forEach((s: any) => { map[s.key] = s.value; });
+    res.json({ success: true, data: map });
+  } catch (err) { res.status(500).json({ success: false, error: (err as Error).message }); }
+});
+
 // Semua route admin wajib auth + role admin
 router.use(requireAuth, requireAdmin);
 

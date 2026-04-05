@@ -43,6 +43,20 @@ const auth_1 = require("../middleware/auth");
 const whatsappBot_1 = require("../services/whatsappBot");
 const whatsappBot_2 = require("../services/whatsappBot");
 const router = (0, express_1.Router)();
+// ─── GET /api/admin/settings/public — Tanpa auth, hanya expose key yang is_secret=false ──
+router.get('/settings/public', async (_req, res) => {
+    try {
+        const settings = await (0, knex_1.default)('app_settings')
+            .where({ is_secret: false })
+            .select('key', 'value');
+        const map = {};
+        settings.forEach((s) => { map[s.key] = s.value; });
+        res.json({ success: true, data: map });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 // Semua route admin wajib auth + role admin
 router.use(auth_1.requireAuth, auth_1.requireAdmin);
 // ─── GET /api/admin/stats ─────────────────────────────────────────────────

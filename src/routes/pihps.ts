@@ -104,4 +104,67 @@ router.get('/map-data', async (req, res) => {
   }
 });
 
+// [GET] /api/pihps/inflation — Hitung inflasi harga pangan antar dua tanggal
+// Query params: date_now, date_prev, commodity (opsional)
+router.get('/inflation', async (req, res) => {
+  try {
+    const { date_now, date_prev, commodity } = req.query;
+
+    // Default: date_now = tanggal terbaru, date_prev = 30 hari sebelumnya
+    const latestRow = await db('pihps_prices').max('date as maxDate').first();
+    const latestDate: string = (date_now as string) || latestRow?.maxDate || new Date().toISOString().slice(0, 10);
+    
+    const prevDate: string = (() => {
+      if (date_prev) return date_prev as string;
+      const d = new Date(latestDate);
+      d.setFullYear(d.getFullYear() - 1); // default YoY
+      return d.toISOString().slice(0, 10);
+    })();
+
+    // Ambil rata-rata harga per komoditas untuk masing-masing tanggal
+    const buildQuery = (date: string) => {
+      let q = db('pihps_prices')
+        .where('date', date)
+        .avg('price as avg_price')
+        .select('commodity_name')
+        .groupBy('commodity_name');
+      if (commodity) q = q.where('commodity_name', 'like', `%${commodity}%`);
+      return q;
+    };
+
+    const [nowData, prevData] = await Promise.all([
+      buildQuery(latestDate),
+      buildQuery(prevDate),
+    ]);
+
+    // Gabungkan dan hitung inflasi
+    const prevMap: Record<string, number> = {};
+    prevData.forEach((r: any) => { prevMap[r.commodity_name] = Number(r.avg_price); });
+
+    const result = nowData
+      .map((r: any) => {
+        const prev = prevMap[r.commodity_name];
+        const now = Number(r.avg_price);
+        const change_pct = prev ? ((now - prev) / prev) * 100 : null;
+        return {
+          commodity_name: r.commodity_name,
+          price_now: Math.round(now),
+          price_prev: prev ? Math.round(prev) : null,
+          change_pct: change_pct !== null ? Math.round(change_pct * 100) / 100 : null,
+          trend: change_pct === null ? 'no_data' : change_pct > 0 ? 'up' : change_pct < 0 ? 'down' : 'stable',
+        };
+      })
+      .filter((r: any) => r.price_prev !== null)
+      .sort((a: any, b: any) => Math.abs(b.change_pct) - Math.abs(a.change_pct));
+
+    res.json({ 
+      status: 'success', 
+      data: { date_now: latestDate, date_prev: prevDate, items: result } 
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to calculate inflation' });
+  }
+});
+
 export default router;
