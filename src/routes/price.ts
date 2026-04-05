@@ -11,15 +11,18 @@ router.get('/latest', async (req, res): Promise<void> => {
   try {
     const { komoditas_id, provinsi, limit = 50 } = req.query;
     let query = db('price_history')
-      .join('komoditas', 'price_history.komoditas_id', 'komoditas.id')
-      .select('price_history.*', 'komoditas.nama as komoditas_nama', 'komoditas.kategori', 'komoditas.satuan')
-      .orderBy('price_history.recorded_date', 'desc')
+      .join('komoditas', 'price_history.komoditas', 'komoditas.id')
+      .select('price_history.*', 'komoditas.nama as komoditas_nama', 'komoditas.kategori')
+      .orderBy('price_history.date', 'desc')
       .limit(Number(limit));
-    if (komoditas_id) query = query.where('price_history.komoditas_id', komoditas_id as string);
+    if (komoditas_id) query = query.where('price_history.komoditas', komoditas_id as string);
     if (provinsi) query = query.where('price_history.provinsi', provinsi as string);
     const prices = await query;
     res.json({ success: true, data: prices });
-  } catch { res.status(500).json({ success: false, error: 'Gagal fetch harga' }); }
+  } catch (err) { 
+      console.error('[API/PRICE/LATEST] Error:', err);
+      res.status(500).json({ success: false, error: 'Gagal fetch harga' }); 
+  }
 });
 
 // ─── POST /api/price/report — Input harga manual ─────────────────────────
@@ -31,9 +34,9 @@ router.post('/report', requireAuth, async (req: AuthRequest, res: Response): Pro
     }
     const id = uuidv4(); const now = new Date().toISOString();
     await db('price_history').insert({
-      id, komoditas_id, price_per_kg: Number(price_per_kg),
+      id, komoditas: komoditas_id, price_per_kg: Number(price_per_kg),
       kabupaten, provinsi, source,
-      recorded_date: now.slice(0, 10), reporter_id: req.user!.id,
+      date: now.slice(0, 10), reporter_id: req.user!.id,
       created_at: now,
     });
     res.status(201).json({ success: true, data: { id } });
@@ -46,10 +49,10 @@ router.get('/history/:komoditasId', async (req, res): Promise<void> => {
     const { provinsi, days = 30 } = req.query;
     const sinceDate = new Date(Date.now() - Number(days) * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     let query = db('price_history')
-      .where('komoditas_id', req.params.komoditasId)
-      .where('recorded_date', '>=', sinceDate)
-      .orderBy('recorded_date', 'asc')
-      .select('recorded_date', 'price_per_kg', 'kabupaten', 'provinsi', 'source');
+      .where('komoditas', req.params.komoditasId)
+      .where('date', '>=', sinceDate)
+      .orderBy('date', 'asc')
+      .select('date', 'price_per_kg', 'kabupaten', 'provinsi', 'source');
     if (provinsi) query = query.where({ provinsi });
     const history = await query;
     res.json({ success: true, data: history });
@@ -61,7 +64,7 @@ router.get('/predict/:komoditasId', requireAuth, async (req: AuthRequest, res: R
   try {
     // Cek apakah ada prediksi cache yang masih valid (< 6 jam)
     const cached = await db('price_predictions')
-      .where({ komoditas_id: req.params.komoditasId })
+      .where({ komoditas: req.params.komoditasId })
       .where('created_at', '>', new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString())
       .orderBy('created_at', 'desc')
       .first();
@@ -72,18 +75,18 @@ router.get('/predict/:komoditasId', requireAuth, async (req: AuthRequest, res: R
 
     // Ambil 30 hari harga terbaru untuk konteks
     const history = await db('price_history')
-      .join('komoditas', 'price_history.komoditas_id', 'komoditas.id')
-      .where('price_history.komoditas_id', req.params.komoditasId)
-      .orderBy('recorded_date', 'desc')
+      .join('komoditas', 'price_history.komoditas', 'komoditas.id')
+      .where('price_history.komoditas', req.params.komoditasId)
+      .orderBy('date', 'desc')
       .limit(30)
-      .select('recorded_date', 'price_per_kg', 'komoditas.nama as nama');
+      .select('date', 'price_per_kg', 'komoditas.nama as nama');
 
     if (history.length < 3) {
       res.status(400).json({ success: false, error: 'Data harga tidak cukup untuk prediksi (min 3 data)' }); return;
     }
 
     const komoditas = history[0].nama;
-    const dataText = history.reverse().map((h: Record<string, unknown>) => `${h.recorded_date}: Rp${h.price_per_kg}/kg`).join('\n');
+    const dataText = history.reverse().map((h: Record<string, unknown>) => `${h.date}: Rp${h.price_per_kg}/kg`).join('\n');
 
     const prompt = `Analisis tren harga ${komoditas} berikut dan prediksi harga untuk 14 hari ke depan dalam format JSON array dengan field "date" (YYYY-MM-DD) dan "predicted_price" (angka dalam Rupiah):\n\n${dataText}\n\nBerikan hanya JSON array, tanpa penjelasan tambahan.`;
     const aiResult = await chatWithAI({
@@ -109,7 +112,7 @@ router.get('/predict/:komoditasId', requireAuth, async (req: AuthRequest, res: R
 
     // Simpan prediksi ke DB
     await db('price_predictions').insert({
-      id: uuidv4(), komoditas_id: req.params.komoditasId,
+      id: uuidv4(), komoditas: req.params.komoditasId,
       predictions_json: JSON.stringify(predictions),
       model_used: 'puter-ai', created_at: new Date().toISOString(),
     });
@@ -126,7 +129,7 @@ router.post('/alert', requireAuth, async (req: AuthRequest, res: Response): Prom
       res.status(400).json({ success: false, error: 'komoditas_id, alert_type, threshold_price wajib' }); return;
     }
     await db('price_alerts').insert({
-      id: uuidv4(), user_id: req.user!.id, komoditas_id,
+      id: uuidv4(), user_id: req.user!.id, komoditas: komoditas_id,
       alert_type, threshold_price: Number(threshold_price),
       provinsi: provinsi || null, is_active: true,
       created_at: new Date().toISOString(),
