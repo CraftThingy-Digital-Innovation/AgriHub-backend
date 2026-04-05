@@ -134,8 +134,8 @@ router.patch('/:id/status', auth_1.requireAuth, async (req, res) => {
         const isSeller = order.seller_id === req.user.id;
         // Validasi transisi status
         const allowed = {
-            seller: ['diproses', 'dikirim'],
-            buyer: ['diterima', 'banding'],
+            seller: ['diproses', 'dikirim', 'dibatalkan'],
+            buyer: ['diterima', 'banding', 'dibatalkan'],
         };
         if (isSeller && !allowed.seller.includes(status)) {
             res.status(400).json({ success: false, error: 'Status tidak valid untuk seller' });
@@ -147,6 +147,11 @@ router.patch('/:id/status', auth_1.requireAuth, async (req, res) => {
         }
         if (!isBuyer && !isSeller) {
             res.status(403).json({ success: false, error: 'Bukan bagian dari pesanan ini' });
+            return;
+        }
+        // Hanya bisa dibatalkan jika belum dibayar (pending / menunggu_bayar)
+        if (status === 'dibatalkan' && !['pending', 'menunggu_bayar'].includes(order.status)) {
+            res.status(400).json({ success: false, error: 'Pesanan tidak bisa dibatalkan karena sudah dibayar/diproses' });
             return;
         }
         const updateData = { status, updated_at: new Date().toISOString() };
