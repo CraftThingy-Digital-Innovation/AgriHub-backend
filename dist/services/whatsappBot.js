@@ -67,6 +67,8 @@ let isInitializing = false;
 let isConnecting = false;
 let isInitializedFlag = false;
 let lastLockWarning = 0;
+let isYielding = false;
+let outboxInterval = null;
 // ─── Baileys Version Cache ─────────────────────────────────────────────────
 // fetchLatestBaileysVersion() membuat outbound HTTP call setiap reconnect.
 // Cache ini mencegah hang saat jaringan tidak stabil.
@@ -260,6 +262,7 @@ async function connectWhatsApp() {
                     }
                     isConnected = false;
                     isConnecting = false;
+                    isYielding = true;
                     // Cek lagi lebih lama agar tidak spam CPU
                     setTimeout(() => connectWhatsApp(), 60000);
                     return;
@@ -279,6 +282,7 @@ async function connectWhatsApp() {
         else {
             await (0, knex_1.default)('whatsapp_auth').insert({ id: (0, uuid_1.v4)(), category: 'lock', key_id: lockKey, data: myLockData });
         }
+        isYielding = false;
         // Heartbeat interval (maintain lock every 15s)
         const heartbeatId = setInterval(async () => {
             // Jika bot sudah tidak terkoneksi/connecting, stop heartbeat
@@ -296,6 +300,7 @@ async function connectWhatsApp() {
                         clearInterval(heartbeatId);
                         isConnected = false;
                         isConnecting = false;
+                        stopOutboxPoller();
                         try {
                             waSocket?.end(undefined);
                         }
@@ -335,6 +340,7 @@ async function connectWhatsApp() {
             if (connection === 'close') {
                 isConnected = false;
                 isConnecting = false;
+                stopOutboxPoller();
                 const reason = lastDisconnect?.error?.output?.statusCode;
                 const shouldReconnect = reason !== baileys_1.DisconnectReason.loggedOut;
                 console.log(`WA disconnected [PID:${process.pid}], reason:`, reason, 'reconnecting:', shouldReconnect);
@@ -360,6 +366,7 @@ async function connectWhatsApp() {
                 isConnecting = false;
                 qrCode = null;
                 startWatchdog(); // Mulai watchdog setelah koneksi berhasil
+                startOutboxPoller(); // Mulai poller outbox
                 console.log('✅ AgriHub WhatsApp Bot terhubung (MOD DEPLOY-PROOF)!');
                 console.log('🤖 Identity:', JSON.stringify(waSocket?.user || {}, null, 2));
             }
@@ -597,6 +604,24 @@ async function sendWAMessage(jid, text, options) {
         }
     }
     if (!waSocket || !isConnected) {
+        if (isYielding) {
+            console.log(`📝 [WA] Queueing message to ${targetJid} (Current process is yielding).`);
+            try {
+                await (0, knex_1.default)('whatsapp_outbox').insert({
+                    id: (0, uuid_1.v4)(),
+                    jid: targetJid,
+                    text: text,
+                    options: options ? JSON.stringify(options) : null,
+                    status: 'pending',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                });
+                return { status: 'queued' };
+            }
+            catch (e) {
+                console.error('❌ [WA] Failed to queue message:', e);
+            }
+        }
         console.error(`❌ [WA] Failed to send message to ${targetJid}: Bot NOT CONNECTED after wait.`);
         return undefined;
     }
@@ -618,6 +643,54 @@ async function sendWAMessage(jid, text, options) {
         }
         console.error(`❌ [WA] Failed to send message to ${targetJid}:`, err);
         return undefined;
+    }
+}
+// ─── Outbox Poller (For Master) ──────────────────────────────────────────
+async function processOutbox() {
+    if (!isConnected || !waSocket || isYielding)
+        return;
+    try {
+        const pending = await (0, knex_1.default)('whatsapp_outbox')
+            .where({ status: 'pending' })
+            .orderBy('created_at', 'asc')
+            .limit(5);
+        if (pending.length === 0)
+            return;
+        console.log(`📬 [WA] Processing ${pending.length} messages from outbox...`);
+        for (const msg of pending) {
+            try {
+                const options = msg.options ? JSON.parse(msg.options) : {};
+                await waSocket.sendMessage(msg.jid, { text: msg.text, ...options });
+                await (0, knex_1.default)('whatsapp_outbox').where({ id: msg.id }).update({
+                    status: 'sent',
+                    updated_at: new Date().toISOString()
+                });
+            }
+            catch (err) {
+                console.error(`❌ [WA] Outbox send failed for ${msg.id}:`, err);
+                await (0, knex_1.default)('whatsapp_outbox').where({ id: msg.id }).update({
+                    status: 'failed',
+                    error: err.message,
+                    updated_at: new Date().toISOString()
+                });
+            }
+        }
+    }
+    catch (err) {
+        console.error('❌ [WA] Outbox poller error:', err);
+    }
+}
+function startOutboxPoller() {
+    if (outboxInterval)
+        clearInterval(outboxInterval);
+    outboxInterval = setInterval(processOutbox, 5000);
+    console.log('✅ [WA] Outbox poller started.');
+}
+function stopOutboxPoller() {
+    if (outboxInterval) {
+        clearInterval(outboxInterval);
+        outboxInterval = null;
+        console.log('🛑 [WA] Outbox poller stopped.');
     }
 }
 // ─── Message Handler Logic ──────────────────────────────────────────────
