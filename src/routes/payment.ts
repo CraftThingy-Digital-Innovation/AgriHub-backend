@@ -35,7 +35,7 @@ router.post('/create', requireAuth, async (req: AuthRequest, res: Response): Pro
     const transactionDetails = {
       transaction_details: {
         order_id: `AGRIHUB-${order_id.slice(-8).toUpperCase()}`,
-        gross_amount: Math.round(order.total_amount + (order.platform_fee || 0) + (order.ppn_amount || 0)),
+        gross_amount: Math.round(order.total_amount + (order.platform_fee || 0) + (order.ppn_fee || 0)),
       },
       customer_details: {
         first_name: order.buyer_name,
@@ -45,8 +45,8 @@ router.post('/create', requireAuth, async (req: AuthRequest, res: Response): Pro
         {
           id: order.product_id,
           name: order.product_name.slice(0, 50),
-          price: Math.round(order.unit_price),
-          quantity: order.quantity,
+          price: Math.round(order.total_amount),
+          quantity: 1, // Midtrans requires integer quantity. Total amount scaling is used.
         },
         ...(order.platform_fee > 0 ? [{
           id: 'platform-fee',
@@ -54,10 +54,10 @@ router.post('/create', requireAuth, async (req: AuthRequest, res: Response): Pro
           price: Math.round(order.platform_fee),
           quantity: 1,
         }] : []),
-        ...(order.ppn_amount > 0 ? [{
+        ...(order.ppn_fee > 0 ? [{
           id: 'ppn',
           name: 'PPN 11%',
-          price: Math.round(order.ppn_amount),
+          price: Math.round(order.ppn_fee),
           quantity: 1,
         }] : []),
       ],
