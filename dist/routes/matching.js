@@ -41,42 +41,25 @@ const knex_1 = __importDefault(require("../config/knex"));
 const auth_1 = require("../middleware/auth");
 const matchingService = __importStar(require("../services/matchingService"));
 const router = (0, express_1.Router)();
-// ─── POST /api/matching/supply — Lapor surplus stok ──────────────────────
-router.post('/supply', auth_1.requireAuth, async (req, res) => {
-    try {
-        const { komoditas, jumlah_kg, harga_per_kg, kabupaten, provinsi, tanggal_tersedia } = req.body;
-        if (!komoditas || !jumlah_kg || !harga_per_kg || !kabupaten) {
-            res.status(400).json({ success: false, error: 'komoditas, jumlah_kg, harga_per_kg, kabupaten wajib' });
-            return;
-        }
-        const result = await matchingService.reportSupply(req.user.id, {
-            komoditas,
-            jumlah_kg: Number(jumlah_kg),
-            harga_per_kg: Number(harga_per_kg),
-            kabupaten,
-            provinsi,
-            tanggal_tersedia
-        });
-        res.status(201).json({ success: true, data: { id: result.id, matches_found: result.matchesFound } });
-    }
-    catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-// ─── POST /api/matching/demand — Lapor kebutuhan ─────────────────────────
+// ─── POST /api/matching/demand — Lapor kebutuhan (Wishlist) ────────────────
 router.post('/demand', auth_1.requireAuth, async (req, res) => {
     try {
-        const { komoditas, jumlah_kg, harga_max_per_kg, kabupaten, deadline } = req.body;
-        if (!komoditas || !jumlah_kg || !harga_max_per_kg || !kabupaten) {
-            res.status(400).json({ success: false, error: 'komoditas, jumlah_kg, harga_max_per_kg, kabupaten wajib' });
+        const { komoditas, jumlah_kg, harga_max_per_kg, address_id } = req.body;
+        if (!komoditas || !jumlah_kg || !harga_max_per_kg || !address_id) {
+            res.status(400).json({ success: false, error: 'komoditas, jumlah_kg, harga_max_per_kg, address_id wajib' });
             return;
         }
-        const result = await matchingService.reportDemand(req.user.id, {
+        // Pastikan address_id milik user ini
+        const address = await (0, knex_1.default)('user_addresses').where({ id: address_id, user_id: req.user.id }).first();
+        if (!address) {
+            res.status(403).json({ success: false, error: 'Alamat tidak ditemukan atau bukan milik Anda' });
+            return;
+        }
+        const result = await matchingService.createWishlist(req.user.id, {
             komoditas,
             jumlah_kg: Number(jumlah_kg),
             harga_max_per_kg: Number(harga_max_per_kg),
-            kabupaten,
-            deadline
+            address_id
         });
         res.status(201).json({ success: true, data: { id: result.id, matches_found: result.matchesFound } });
     }
@@ -87,36 +70,26 @@ router.post('/demand', auth_1.requireAuth, async (req, res) => {
 // ─── GET /api/matching/feed — List matches yang relevan ──────────────────
 router.get('/feed', auth_1.requireAuth, async (req, res) => {
     try {
-        const { provinsi } = req.query;
-        let query = (0, knex_1.default)('match_history')
-            .join('supply_reports', 'match_history.supply_id', 'supply_reports.id')
-            .join('demand_requests', 'match_history.demand_id', 'demand_requests.id')
-            .join('komoditas', 'supply_reports.komoditas', 'komoditas.nama')
-            .where('supply_reports.is_active', true)
-            .orderBy('match_history.score', 'desc')
-            .select('match_history.*', 'komoditas.nama as komoditas_nama', 'supply_reports.kabupaten as supply_kabupaten', 'supply_reports.provinsi as supply_provinsi', 'demand_requests.kota_tujuan as demand_kabupaten')
-            .limit(20);
-        if (provinsi)
-            query = query.where(function () {
-                this.where('supply_reports.provinsi', provinsi);
-            });
-        const feed = await query;
+        const feed = await matchingService.getMatchesForUser(req.user.id);
         res.json({ success: true, data: feed });
     }
     catch (err) {
         res.status(500).json({ success: false, error: 'Gagal fetch feed matching: ' + err.message });
     }
 });
-// ─── GET /api/matching/my-supply ─────────────────────────────────────────
-router.get('/my-supply', auth_1.requireAuth, async (req, res) => {
+// ─── DELETE /api/matching/demand/:id — Hapus Wishlist ───────────────────
+router.delete('/demand/:id', auth_1.requireAuth, async (req, res) => {
     try {
-        const reports = await (0, knex_1.default)('supply_reports')
-            .where('supply_reports.reporter_id', req.user.id)
-            .orderBy('supply_reports.created_at', 'desc');
-        res.json({ success: true, data: reports });
+        const demand = await (0, knex_1.default)('demand_requests').where({ id: req.params.id, requester_id: req.user.id }).first();
+        if (!demand) {
+            res.status(404).json({ success: false, error: 'Wishlist tidak ditemukan' });
+            return;
+        }
+        await (0, knex_1.default)('demand_requests').where({ id: req.params.id }).update({ is_active: false });
+        res.json({ success: true, message: 'Wishlist dinonaktifkan' });
     }
     catch {
-        res.status(500).json({ success: false, error: 'Gagal fetch supply' });
+        res.status(500).json({ success: false, error: 'Gagal hapus wishlist' });
     }
 });
 exports.default = router;

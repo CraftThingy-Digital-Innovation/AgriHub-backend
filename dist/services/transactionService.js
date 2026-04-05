@@ -3,12 +3,35 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.createTransactionMidtrans = createTransactionMidtrans;
 exports.createOrderFromMatch = createOrderFromMatch;
 exports.updateShippingStatus = updateShippingStatus;
 exports.confirmOrderReceipt = confirmOrderReceipt;
 exports.runAutoConfirmJob = runAutoConfirmJob;
 const uuid_1 = require("uuid");
 const knex_1 = __importDefault(require("../config/knex"));
+const midtrans_client_1 = __importDefault(require("midtrans-client"));
+const snap = new midtrans_client_1.default.Snap({
+    isProduction: process.env.NODE_ENV === 'production',
+    serverKey: process.env.MIDTRANS_SERVER_KEY || '',
+    clientKey: process.env.MIDTRANS_CLIENT_KEY || '',
+});
+async function createTransactionMidtrans(orderId, exactGrossAmount) {
+    const transactionDetails = {
+        transaction_details: {
+            order_id: `AGRIHUB-${orderId.slice(-8).toUpperCase()}`,
+            gross_amount: Math.round(exactGrossAmount),
+        },
+        credit_card: {
+            secure: true
+        }
+    };
+    const transaction = await snap.createTransaction(transactionDetails);
+    return {
+        token: transaction.token,
+        redirect_url: transaction.redirect_url
+    };
+}
 async function createOrderFromMatch(input) {
     const { matchId, buyerId, courierCode, courierService, shippingPrice, notes } = input;
     // 1. Get Match & Supply/Demand details

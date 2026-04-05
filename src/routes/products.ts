@@ -62,6 +62,12 @@ router.post('/', requireAuth, async (req: AuthRequest, res: Response): Promise<v
       origin: origin || null, images_json: images_json || null,
       is_active: true, created_at: now, updated_at: now 
     });
+    
+    // Asynchronously trigger supply-demand match checking
+    import('../services/matchingService').then(service => {
+        service.runMatchingForProduct(id).catch(console.error);
+    });
+
     const product = await db('products').where({ id }).first();
     res.status(201).json({ success: true, data: product });
   } catch { res.status(500).json({ success: false, error: 'Gagal buat produk' }); }

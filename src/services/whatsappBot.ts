@@ -21,6 +21,7 @@ import * as matchingService from './matchingService';
 import * as transactionService from './transactionService';
 import { v4 as uuidv4 } from 'uuid';
 import puter from '@heyputer/puter.js';
+import * as checkoutService from './whatsappCheckoutService';
 
 // ─── Constants ───────────────────────────────────────────────────────────
 const SESSION_NAME = process.env.WA_SESSION_NAME || 'main';
@@ -822,15 +823,15 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
         if (!user) { await sendWAMessage(jid, '❌ Akun tidak ditemukan.'); return; }
 
         const buying = await db('orders')
-          .join('supply_reports', 'orders.product_id', 'supply_reports.id')
+          .join('products', 'orders.product_id', 'products.id')
           .where('orders.buyer_id', user.id)
-          .select('orders.id', 'supply_reports.komoditas', 'orders.status', 'orders.total_amount')
+          .select('orders.id', 'products.name as komoditas', 'orders.status', 'orders.total_amount')
           .orderBy('orders.created_at', 'desc').limit(5);
 
         const selling = await db('orders')
-          .join('supply_reports', 'orders.product_id', 'supply_reports.id')
+          .join('products', 'orders.product_id', 'products.id')
           .where('orders.seller_id', user.id)
-          .select('orders.id', 'supply_reports.komoditas', 'orders.status', 'orders.total_amount')
+          .select('orders.id', 'products.name as komoditas', 'orders.status', 'orders.total_amount')
           .orderBy('orders.created_at', 'desc').limit(5);
 
         let msg = `📦 *Status Pesanan AgriHub*\n\n`;
@@ -852,78 +853,29 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
         return;
       }
 
+      if (cleanUpper.startsWith('BELI ')) {
+         const matchId = cleanText.slice(5).trim();
+         await checkoutService.processBeliCommand(jid, sender, matchId);
+         return;
+      }
+
+      if (cleanUpper.startsWith('PILIH KURIR ')) {
+         const selection = parseInt(cleanText.slice(12).trim(), 10);
+         if (isNaN(selection)) {
+             await sendWAMessage(jid, '❌ Format salah. Contoh: PILIH KURIR 1');
+             return;
+         }
+         await checkoutService.processPilihKurirCommand(jid, sender, selection);
+         return;
+      }
+
       if (cleanUpper.startsWith('LAPOR STOK')) {
-        const parts = cleanText.split('|').map(s => s.trim());
-        if (parts.length < 4) {
-          await sendWAMessage(jid, '📝 *Format:* LAPOR STOK | Komoditas | Jumlah kg | Harga/kg | Kabupaten\n\nContoh: LAPOR STOK | Padi | 500kg | 8000 | Sleman');
-          return;
-        }
-        const [, komoditas, jumlah, harga, kabupaten] = parts;
-        const user = await db('users').where({ whatsapp_lid: sender }).first() || await db('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
-
-        if (!user) {
-          await sendWAMessage(jid, '❌ Akun Anda belum terdaftar atau tertaut. Gunakan perintah *LINK [Nomor HP]* dulu.');
-          return;
-        }
-
-        const result = await matchingService.reportSupply(user.id, {
-          komoditas,
-          jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
-          harga_per_kg: Number(harga.replace(/[^0-9]/g, '')),
-          kabupaten,
-          provinsi: '' // Optional
-        });
-
-        const matchCount = result.matchesFound;
-        await sendWAMessage(jid, `✅ *Berhasil!* Stok *${komoditas}* (${jumlah}) Anda telah dilaporkan.\n\n${matchCount > 0 ? `🔥 *BOOM!* Kami menemukan *${matchCount}* calon pembeli yang cocok untuk Anda!` : 'Sistem sedang mencari pembeli yang cocok.'} Ketik *LIHAT MATCH* untuk melihat hasilnya.`);
-
-        // Broadcast notifications to matched parties
-        if (matchCount > 0) {
-          const matches = await matchingService.getMatchesForUser(user.id);
-          for (const m of matches) {
-            if (m.supply_id === result.id) {
-              const targetJid = m.matched_lid || `${m.matched_phone}@s.whatsapp.net`;
-              await sendWAMessage(targetJid, `🤝 *Kecocokan Baru!* Stok *${komoditas}* yang Anda cari baru saja dilaporkan oleh seorang petani di *${kabupaten}*.\n\n💰 Harga: Rp${Number(harga.replace(/[^0-9]/g, '')).toLocaleString('id-ID')}/kg\n📦 Jumlah: ${jumlah}\n\nSegera cek di dashboard AgriHub!`);
-            }
-          }
-        }
+        await sendWAMessage(jid, 'ℹ️ Sistem Supply kini sudah terpusat. Untuk melaporkan stok, silakan tambahkan produk ke toko Anda melalui menu Dasbor Web atau ketik *JUAL [nama barang] [harga] [stok]* di sini. Sistem akan otomatis mencarikan pembeli yang potensial!');
         return;
       }
 
       if (cleanUpper.startsWith('CARI STOK')) {
-        const parts = cleanText.split('|').map(s => s.trim());
-        if (parts.length < 4) {
-          await sendWAMessage(jid, '📝 *Format:* CARI STOK | Komoditas | Jumlah kg | Harga Max | Kabupaten\n\nContoh: CARI STOK | Padi | 100kg | 8500 | Sleman');
-          return;
-        }
-        const [, komoditas, jumlah, harga, kabupaten] = parts;
-        const user = await db('users').where({ whatsapp_lid: sender }).first() || await db('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
-
-        if (!user) {
-          await sendWAMessage(jid, '❌ Akun Anda belum terdaftar atau tertaut.');
-          return;
-        }
-
-        const result = await matchingService.reportDemand(user.id, {
-          komoditas,
-          jumlah_kg: Number(jumlah.replace(/[^0-9]/g, '')),
-          harga_max_per_kg: Number(harga.replace(/[^0-9]/g, '')),
-          kabupaten
-        });
-
-        const matchCount = result.matchesFound;
-        await sendWAMessage(jid, `🔍 *Permintaan Dicatat:* Mencari *${komoditas}* (${jumlah}) dengan harga max Rp${Number(harga.replace(/[^0-9]/g, '')).toLocaleString('id-ID')}.\n\n${matchCount > 0 ? `🚀 *Kabar Baik!* Ada *${matchCount}* stok tersedia yang cocok dengan permintaan Anda!` : 'Kami akan memberitahu jika ada penjual yang cocok!'}`);
-
-        // Broadcast notifications to matched parties
-        if (matchCount > 0) {
-          const matches = await matchingService.getMatchesForUser(user.id);
-          for (const m of matches) {
-            if (m.demand_id === result.id) {
-              const targetJid = m.matched_lid || `${m.matched_phone}@s.whatsapp.net`;
-              await sendWAMessage(targetJid, `🤝 *Peluang Penjualan!* Seorang pembeli mencari *${komoditas}* (${jumlah}) di *${kabupaten}* dengan harga s/d Rp${Number(harga.replace(/[^0-9]/g, '')).toLocaleString('id-ID')}.\n\nStok Anda sangat cocok dengan permintaan ini!`);
-            }
-          }
-        }
+        await sendWAMessage(jid, 'ℹ️ Fitur permintaan barang kini ditingkatkan menjadi **Wishlist** pintar yang terhubung langsung dengan Alamat Pengiriman Anda secara otomatis.\n\nSilakan kunjungi *Menu Wishlist* di Dashboard Web AgriHub (https://agrihub.rumah-genbi.com) untuk menambahkan produk yang Anda butuhkan. Kami akan otomatis memberi tahu Anda di WA ketika ada stok yang cocok dan murah! 🥳');
         return;
       }
 

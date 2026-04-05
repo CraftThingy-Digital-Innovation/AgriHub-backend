@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/knex';
 import { checkOngkir } from './biteshipService';
+import Midtrans from 'midtrans-client';
 
 export interface OrderInput {
     matchId: string;
@@ -9,6 +10,29 @@ export interface OrderInput {
     courierService: string;
     shippingPrice: number;
     notes?: string;
+}
+
+const snap = new Midtrans.Snap({
+  isProduction: process.env.NODE_ENV === 'production',
+  serverKey: process.env.MIDTRANS_SERVER_KEY || '',
+  clientKey: process.env.MIDTRANS_CLIENT_KEY || '',
+});
+
+export async function createTransactionMidtrans(orderId: string, exactGrossAmount: number): Promise<{ token: string, redirect_url: string }> {
+    const transactionDetails = {
+      transaction_details: {
+        order_id: `AGRIHUB-${orderId.slice(-8).toUpperCase()}`,
+        gross_amount: Math.round(exactGrossAmount),
+      },
+      credit_card: {
+        secure: true
+      }
+    };
+    const transaction = await snap.createTransaction(transactionDetails);
+    return {
+        token: transaction.token,
+        redirect_url: transaction.redirect_url
+    };
 }
 
 export async function createOrderFromMatch(input: OrderInput) {
