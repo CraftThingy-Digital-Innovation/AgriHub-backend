@@ -42,8 +42,9 @@ router.post('/create', auth_1.requireAuth, async (req, res) => {
         const itemPrice = Math.round(order.total_amount);
         const platformFee = order.platform_fee ? Math.round(order.platform_fee) : 0;
         const ppnFee = order.ppn_fee ? Math.round(order.ppn_fee) : 0;
+        const shippingFee = order.shipping_fee ? Math.round(order.shipping_fee) : 0;
         // Total harus BENAR-BENAR SAMA dengan jumlah dari price item_details
-        const exactGrossAmount = itemPrice + platformFee + ppnFee;
+        const exactGrossAmount = itemPrice + platformFee + ppnFee + shippingFee;
         const transactionDetails = {
             transaction_details: {
                 order_id: `AGRIHUB-${order_id.slice(-8).toUpperCase()}`,
@@ -70,6 +71,12 @@ router.post('/create', auth_1.requireAuth, async (req, res) => {
                         id: 'ppn',
                         name: 'PPN 11%',
                         price: ppnFee,
+                        quantity: 1,
+                    }] : []),
+                ...(shippingFee > 0 ? [{
+                        id: 'shipping',
+                        name: 'Ongkos Kirim',
+                        price: shippingFee,
                         quantity: 1,
                     }] : []),
             ],

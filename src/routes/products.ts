@@ -14,7 +14,7 @@ router.get('/', async (req, res): Promise<void> => {
       .join('stores', 'products.store_id', 'stores.id')
       .where('products.is_active', true)
       .where('stores.is_active', true)
-      .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'stores.provinsi');
+      .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'stores.provinsi', 'stores.postal_code as store_postal_code');
 
     if (kategori) query = query.where('products.category', kategori as string);
     if (search) query = query.where('products.name', 'like', `%${search}%`);
@@ -34,7 +34,7 @@ router.get('/:id', async (req, res): Promise<void> => {
     const product = await db('products')
       .join('stores', 'products.store_id', 'stores.id')
       .where('products.id', req.params.id)
-      .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'stores.provinsi', 'stores.rating as store_rating')
+      .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'stores.provinsi', 'stores.rating as store_rating', 'stores.postal_code as store_postal_code')
       .first();
     if (!product) { res.status(404).json({ success: false, error: 'Produk tidak ditemukan' }); return; }
     res.json({ success: true, data: product });

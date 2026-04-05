@@ -12,7 +12,7 @@ const router = (0, express_1.Router)();
 /** POST /api/orders — Buat pesanan baru */
 router.post('/', auth_1.requireAuth, async (req, res) => {
     try {
-        const { product_id, quantity, notes } = req.body;
+        const { product_id, quantity, notes, shipping_fee, shipping_courier, shipping_service } = req.body;
         if (!product_id || !quantity) {
             res.status(400).json({ success: false, error: 'product_id dan quantity wajib' });
             return;
@@ -40,6 +40,9 @@ router.post('/', auth_1.requireAuth, async (req, res) => {
             ppn_fee: fees.ppnAmount,
             midtrans_mdr: fees.midtransMdr,
             seller_net: fees.sellerAmount,
+            shipping_fee: shipping_fee || 0,
+            shipping_courier: shipping_courier || null,
+            shipping_service: shipping_service || null,
             status: 'pending', notes: notes || null,
             created_at: now, updated_at: now,
         });

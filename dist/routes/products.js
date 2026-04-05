@@ -16,7 +16,7 @@ router.get('/', async (req, res) => {
             .join('stores', 'products.store_id', 'stores.id')
             .where('products.is_active', true)
             .where('stores.is_active', true)
-            .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'stores.provinsi');
+            .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'stores.provinsi', 'stores.postal_code as store_postal_code');
         if (kategori)
             query = query.where('products.category', kategori);
         if (search)
@@ -38,7 +38,7 @@ router.get('/:id', async (req, res) => {
         const product = await (0, knex_1.default)('products')
             .join('stores', 'products.store_id', 'stores.id')
             .where('products.id', req.params.id)
-            .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'stores.provinsi', 'stores.rating as store_rating')
+            .select('products.*', 'stores.name as store_name', 'stores.kabupaten', 'stores.provinsi', 'stores.rating as store_rating', 'stores.postal_code as store_postal_code')
             .first();
         if (!product) {
             res.status(404).json({ success: false, error: 'Produk tidak ditemukan' });
