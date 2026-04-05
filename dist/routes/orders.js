@@ -35,7 +35,11 @@ router.post('/', auth_1.requireAuth, async (req, res) => {
             id, buyer_id: req.user.id, seller_id: store.owner_id,
             store_id: product.store_id, product_id,
             quantity, unit_price: product.price_per_unit,
-            total_amount, ...fees,
+            total_amount,
+            platform_fee: fees.platformFee,
+            ppn_fee: fees.ppnAmount,
+            midtrans_mdr: fees.midtransMdr,
+            seller_net: fees.sellerAmount,
             status: 'pending', notes: notes || null,
             created_at: now, updated_at: now,
         });
