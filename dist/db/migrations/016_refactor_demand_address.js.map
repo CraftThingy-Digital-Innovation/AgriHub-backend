@@ -1,0 +1,1 @@
+{"version":3,"file":"016_refactor_demand_address.js","sourceRoot":"","sources":["../../../src/db/migrations/016_refactor_demand_address.ts"],"names":[],"mappings":";;AAEA,gBAGC;AAED,oBAEC;AAPM,KAAK,UAAU,EAAE,CAAC,IAAU;IACjC,wDAAwD;IACxD,iEAAiE;AACnE,CAAC;AAEM,KAAK,UAAU,IAAI,CAAC,IAAU;IACnC,QAAQ;AACV,CAAC"}
