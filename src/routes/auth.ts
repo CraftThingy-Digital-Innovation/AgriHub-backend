@@ -4,374 +4,495 @@ import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../config/knex';
 import { requireAuth, AuthRequest } from '../middleware/auth';
+import { sendVerificationEmail } from '../services/emailService';
+import { sendWAMessage } from '../services/whatsappBot';
 
 const router = Router();
 
-/**
- * POST /api/auth/register
- * Daftar user baru (phone + password atau Puter OAuth)
- */
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+const JWT_SECRET = () => process.env.JWT_SECRET || 'secret';
+const signToken = (id: string) => jwt.sign({ id }, JWT_SECRET(), { expiresIn: '30d' });
+const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const otpExpiry = () => new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+function safeUser(user: any) {
+  if (!user) return null;
+  const { password_hash, email_verify_token, phone_otp, email_verify_expires, phone_otp_expires, ...safe } = user;
+  return safe;
+}
+
+function validatePassword(password: string): string | null {
+  if (password.length < 8) return 'Password minimal 8 karakter';
+  if (!/[A-Z]/.test(password)) return 'Password harus mengandung huruf kapital (A-Z)';
+  if (!/[a-z]/.test(password)) return 'Password harus mengandung huruf kecil (a-z)';
+  if (!/\d/.test(password)) return 'Password harus mengandung angka';
+  if (!/[!@#$%^&*()\-_=+\[\]{};':"\\|,.<>\/?]/.test(password)) return 'Password harus mengandung karakter spesial (!@#$%...)';
+  return null;
+}
+
+function normalizeIdentifier(identifier: string): { field: string; value: string } {
+  const clean = identifier.trim();
+  if (clean.includes('@')) return { field: 'email', value: clean.toLowerCase() };
+  if (/^\+?[0-9]{8,15}$/.test(clean.replace(/[\s\-]/g, ''))) return { field: 'phone', value: clean.replace(/[\s\-]/g, '') };
+  return { field: 'username', value: clean.toLowerCase() };
+}
+
+// ─── POST /api/auth/register ──────────────────────────────────────────────────
 router.post('/register', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { phone, name, email, password, puter_user_id } = req.body;
-    if (!phone || !name) {
-      res.status(400).json({ success: false, error: 'Phone dan nama wajib diisi' });
-      return;
+    const { phone, name, username, email, password } = req.body;
+
+    if (!phone || !name || !password) {
+      res.status(400).json({ success: false, error: 'Nomor HP, nama, dan password wajib diisi' }); return;
+    }
+    const pwErr = validatePassword(password);
+    if (pwErr) { res.status(400).json({ success: false, error: pwErr }); return; }
+
+    const existsPhone = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+    if (existsPhone) { res.status(409).json({ success: false, error: 'Nomor HP sudah terdaftar' }); return; }
+
+    if (username) {
+      if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) {
+        res.status(400).json({ success: false, error: 'Username hanya huruf, angka, underscore (3-30 karakter)' }); return;
+      }
+      const existsUser = await db('users').whereRaw('LOWER(username) = ?', [username.toLowerCase()]).first();
+      if (existsUser) { res.status(409).json({ success: false, error: 'Username sudah digunakan' }); return; }
+    }
+    if (email) {
+      const existsEmail = await db('users').whereRaw('LOWER(email) = ?', [email.toLowerCase()]).first();
+      if (existsEmail) { res.status(409).json({ success: false, error: 'Email sudah terdaftar' }); return; }
     }
 
-    const exists = await db('users').where({ phone }).first();
-    if (exists) {
-      res.status(409).json({ success: false, error: 'Nomor HP sudah terdaftar' });
-      return;
-    }
-
-    const password_hash = password ? await bcrypt.hash(password, 10) : null;
+    const password_hash = await bcrypt.hash(password, 10);
     const id = uuidv4();
     const now = new Date().toISOString();
+    const emailVerifyToken = email ? uuidv4() : null;
+    const emailVerifyExpires = email ? new Date(Date.now() + 24 * 3600 * 1000).toISOString() : null;
 
     await db('users').insert({
-      id, phone, name, email: email || null, password_hash,
-      role: 'konsumen', is_verified: false,
-      puter_user_id: puter_user_id || null,
+      id, phone, name,
+      username: username?.toLowerCase() || null,
+      email: email?.toLowerCase() || null,
+      password_hash,
+      role: 'konsumen',
+      is_verified: false,
+      email_verified: false,
+      email_verify_token: emailVerifyToken,
+      email_verify_expires: emailVerifyExpires,
+      phone_verified: false,
       created_at: now, updated_at: now,
     });
 
-    // Buat wallet otomatis
     await db('wallets').insert({
       id: uuidv4(), user_id: id, balance: 0, pending_balance: 0,
-      total_earned: 0, total_withdrawn: 0,
-      created_at: now, updated_at: now,
+      total_earned: 0, total_withdrawn: 0, created_at: now, updated_at: now,
     });
 
-    const token = jwt.sign({ id }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
+    if (email && emailVerifyToken) {
+      sendVerificationEmail(email, emailVerifyToken, name).catch(console.error);
+    }
+
+    const token = signToken(id);
     const user = await db('users').where({ id }).first();
-    res.status(201).json({ success: true, data: { user, token } });
+    res.status(201).json({ success: true, data: { user: safeUser(user), token } });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: 'Gagal daftar' });
+    console.error('[register]', err);
+    res.status(500).json({ success: false, error: 'Gagal mendaftar' });
   }
 });
 
-/**
- * POST /api/auth/login
- */
+// ─── POST /api/auth/login ─────────────────────────────────────────────────────
 router.post('/login', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { phone, password, puter_user_id } = req.body;
+    const { identifier, phone, password, puter_user_id } = req.body;
+    const id_ = identifier || phone;
 
-    let user;
     if (puter_user_id) {
-      // Puter OAuth login
-      user = await db('users').where({ puter_user_id }).first();
-    } else {
-      if (!phone || !password) {
-        res.status(400).json({ success: false, error: 'Phone dan password wajib diisi' });
-        return;
-      }
-      user = await db('users').where({ phone }).first();
-      if (!user?.password_hash) {
-        res.status(401).json({ success: false, error: 'Akun tidak ditemukan' });
-        return;
-      }
-      const valid = await bcrypt.compare(password, user.password_hash);
-      if (!valid) {
-        res.status(401).json({ success: false, error: 'Password salah' });
-        return;
-      }
-    }
-
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User tidak ditemukan' });
+      const user = await db('users').where({ puter_user_id }).first();
+      if (!user) { res.status(404).json({ success: false, error: 'Akun Puter tidak ditemukan' }); return; }
+      res.json({ success: true, data: { user: safeUser(user), token: signToken(user.id) } });
       return;
     }
 
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
-    const { password_hash: _, ...safeUser } = user;
-    res.json({ success: true, data: { user: safeUser, token } });
-  } catch {
+    if (!id_ || !password) {
+      res.status(400).json({ success: false, error: 'Identifier dan password wajib diisi' }); return;
+    }
+
+    const { field, value } = normalizeIdentifier(id_);
+    let user: any;
+    if (field === 'phone') {
+      user = await db('users').where('phone', 'like', `%${value.slice(-9)}%`).first();
+    } else if (field === 'email') {
+      user = await db('users').whereRaw('LOWER(email) = ?', [value]).first();
+    } else {
+      user = await db('users').whereRaw('LOWER(username) = ?', [value]).first();
+    }
+
+    if (!user?.password_hash) {
+      res.status(401).json({ success: false, error: 'Akun tidak ditemukan atau belum punya password' }); return;
+    }
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) { res.status(401).json({ success: false, error: 'Password salah' }); return; }
+
+    res.json({ success: true, data: { user: safeUser(user), token: signToken(user.id) } });
+  } catch (err) {
+    console.error('[login]', err);
     res.status(500).json({ success: false, error: 'Gagal login' });
   }
 });
 
-/**
- * GET /api/auth/me
- */
+// ─── POST /api/auth/login-puter ───────────────────────────────────────────────
+router.post('/login-puter', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { puter_token, puter_user_id, puter_name, puter_email, puter_username } = req.body;
+    if (!puter_token || !puter_user_id) {
+      res.status(400).json({ success: false, error: 'puter_token dan puter_user_id wajib' }); return;
+    }
+
+    const now = new Date().toISOString();
+    let user = await db('users').where({ puter_user_id }).first();
+    if (!user && puter_email) {
+      user = await db('users').whereRaw('LOWER(email) = ?', [puter_email.toLowerCase()]).first();
+    }
+
+    if (user) {
+      await db('users').where({ id: user.id }).update({ puter_token, puter_user_id, updated_at: now });
+      const fresh = await db('users').where({ id: user.id }).first();
+      res.json({ success: true, data: { user: safeUser(fresh), token: signToken(user.id), needs_phone: !user.phone || !user.phone_verified, needs_password: !user.password_hash } });
+    } else {
+      // Akun baru via Puter — perlu phone + password setelah ini
+      const tempUsername = puter_username?.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 30) || null;
+      const id = uuidv4();
+      await db('users').insert({
+        id,
+        phone: null,
+        name: puter_name || puter_username || 'Pengguna Puter',
+        username: tempUsername,
+        email: puter_email?.toLowerCase() || null,
+        email_verified: !!puter_email,
+        puter_user_id,
+        puter_token,
+        role: 'konsumen',
+        is_verified: false,
+        phone_verified: false,
+        created_at: now, updated_at: now,
+      });
+      await db('wallets').insert({
+        id: uuidv4(), user_id: id, balance: 0, pending_balance: 0,
+        total_earned: 0, total_withdrawn: 0, created_at: now, updated_at: now,
+      });
+      const newUser = await db('users').where({ id }).first();
+      res.status(201).json({ success: true, data: { user: safeUser(newUser), token: signToken(id), needs_phone: true, needs_password: true, is_new: true } });
+    }
+  } catch (err) {
+    console.error('[login-puter]', err);
+    res.status(500).json({ success: false, error: 'Gagal login dengan Puter' });
+  }
+});
+
+// ─── POST /api/auth/complete-puter-profile ────────────────────────────────────
+// Setelah daftar via Puter, isi phone + password. OTP dikirim via WA.
+router.post('/complete-puter-profile', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { phone, password, retype_password } = req.body;
+    if (!phone) { res.status(400).json({ success: false, error: 'Nomor HP wajib diisi' }); return; }
+
+    if (password) {
+      if (password !== retype_password) { res.status(400).json({ success: false, error: 'Password tidak cocok' }); return; }
+      const pwErr = validatePassword(password);
+      if (pwErr) { res.status(400).json({ success: false, error: pwErr }); return; }
+    }
+
+    const existing = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).whereNot({ id: req.user!.id }).first();
+    if (existing) { res.status(409).json({ success: false, error: 'Nomor HP sudah digunakan akun lain' }); return; }
+
+    const updates: any = { phone, updated_at: new Date().toISOString() };
+    if (password) updates.password_hash = await bcrypt.hash(password, 10);
+    await db('users').where({ id: req.user!.id }).update(updates);
+
+    // Kirim OTP ke WA
+    const otp = generateOTP();
+    await db('users').where({ id: req.user!.id }).update({ phone_otp: otp, phone_otp_expires: otpExpiry() });
+    try {
+      await (sendWAMessage as any)(phone, `🌾 *AgriHub* — Kode OTP verifikasi nomor Anda:\n\n*${otp}*\n\n_Berlaku 10 menit. Jangan bagikan ke siapapun._`);
+    } catch (e) { console.warn('[OTP] WA send failed:', e); console.log(`[OTP DEV] ${phone} → ${otp}`); }
+
+    const user = await db('users').where({ id: req.user!.id }).first();
+    res.json({ success: true, message: 'Profil diperbarui. OTP dikirim ke WhatsApp.', data: { user: safeUser(user) } });
+  } catch (err) {
+    console.error('[complete-puter-profile]', err);
+    res.status(500).json({ success: false, error: 'Gagal memperbarui profil' });
+  }
+});
+
+// ─── POST /api/auth/send-phone-otp ────────────────────────────────────────────
+router.post('/send-phone-otp', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = await db('users').where({ id: req.user!.id }).first();
+    if (!user?.phone) { res.status(400).json({ success: false, error: 'Nomor HP belum terdaftar' }); return; }
+    if (user.phone_verified) { res.json({ success: true, message: 'Nomor sudah terverifikasi' }); return; }
+
+    const otp = generateOTP();
+    await db('users').where({ id: user.id }).update({ phone_otp: otp, phone_otp_expires: otpExpiry() });
+    try {
+      await (sendWAMessage as any)(user.phone, `🌾 *AgriHub* — Kode OTP verifikasi nomor Anda:\n\n*${otp}*\n\n_Berlaku 10 menit. Jangan bagikan ke siapapun._`);
+      res.json({ success: true, message: `OTP dikirim ke WhatsApp ${user.phone}` });
+    } catch {
+      console.log(`[OTP DEV] ${user.phone} → ${otp}`);
+      res.json({ success: true, message: 'OTP digenerate (cek log server)', dev_otp: process.env.NODE_ENV !== 'production' ? otp : undefined });
+    }
+  } catch { res.status(500).json({ success: false, error: 'Gagal kirim OTP' }); }
+});
+
+// ─── POST /api/auth/verify-phone-otp ──────────────────────────────────────────
+router.post('/verify-phone-otp', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { otp } = req.body;
+    const user = await db('users').where({ id: req.user!.id }).first();
+    if (!user?.phone_otp) { res.status(400).json({ success: false, error: 'Tidak ada OTP aktif' }); return; }
+    if (new Date(user.phone_otp_expires) < new Date()) { res.status(400).json({ success: false, error: 'OTP kadaluarsa' }); return; }
+    if (user.phone_otp !== otp?.toString()) { res.status(400).json({ success: false, error: 'OTP salah' }); return; }
+
+    await db('users').where({ id: user.id }).update({ phone_verified: true, phone_otp: null, phone_otp_expires: null, is_verified: true, updated_at: new Date().toISOString() });
+    const fresh = await db('users').where({ id: user.id }).first();
+    res.json({ success: true, message: 'Nomor HP berhasil diverifikasi!', data: { user: safeUser(fresh) } });
+  } catch { res.status(500).json({ success: false, error: 'Gagal verifikasi OTP' }); }
+});
+
+// ─── GET /api/auth/verify-email ───────────────────────────────────────────────
+router.get('/verify-email', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { token } = req.query as { token: string };
+    if (!token) { res.redirect('/login?error=token_missing'); return; }
+    const user = await db('users').where({ email_verify_token: token }).first();
+    if (!user) { res.redirect('/login?error=invalid_token'); return; }
+    if (user.email_verified) { res.redirect('/app?email_verified=already'); return; }
+    if (new Date(user.email_verify_expires) < new Date()) { res.redirect('/login?error=token_expired'); return; }
+    await db('users').where({ id: user.id }).update({ email_verified: true, email_verify_token: null, email_verify_expires: null, updated_at: new Date().toISOString() });
+    res.redirect('/app?email_verified=1');
+  } catch { res.redirect('/login?error=server_error'); }
+});
+
+// ─── POST /api/auth/resend-verify-email ──────────────────────────────────────
+router.post('/resend-verify-email', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = await db('users').where({ id: req.user!.id }).first();
+    if (!user?.email) { res.status(400).json({ success: false, error: 'Tidak ada email terdaftar' }); return; }
+    if (user.email_verified) { res.json({ success: true, message: 'Email sudah terverifikasi' }); return; }
+    const token = uuidv4();
+    const expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    await db('users').where({ id: user.id }).update({ email_verify_token: token, email_verify_expires: expires });
+    await sendVerificationEmail(user.email, token, user.name);
+    res.json({ success: true, message: 'Email verifikasi dikirim ulang' });
+  } catch { res.status(500).json({ success: false, error: 'Gagal kirim email' }); }
+});
+
+// ─── GET /api/auth/check-username/:username ───────────────────────────────────
+router.get('/check-username/:username', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { username } = req.params;
+    if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) { res.json({ success: true, available: false, reason: 'Format tidak valid' }); return; }
+    const exists = await db('users').whereRaw('LOWER(username) = ?', [username.toLowerCase()]).first();
+    res.json({ success: true, available: !exists });
+  } catch { res.status(500).json({ success: false, error: 'Gagal cek username' }); }
+});
+
+// ─── GET /api/auth/me ─────────────────────────────────────────────────────────
 router.get('/me', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = await db('users').where({ id: req.user!.id }).first();
     const wallet = await db('wallets').where({ user_id: req.user!.id }).first();
-    const { password_hash: _, ...safeUser } = user;
-    res.json({ success: true, data: { user: safeUser, wallet } });
-  } catch {
-    res.status(500).json({ success: false, error: 'Gagal fetch user' });
-  }
+    res.json({ success: true, data: { user: safeUser(user), wallet } });
+  } catch { res.status(500).json({ success: false, error: 'Gagal fetch user' }); }
 });
 
-/**
- * PATCH /api/auth/puter-token
- * Simpan token OAuth Puter.js user
- */
+// ─── PATCH /api/auth/puter-token ─────────────────────────────────────────────
 router.patch('/puter-token', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { token } = req.body;
-    await db('users').where({ id: req.user!.id }).update({
-      puter_token: token,
-      updated_at: new Date().toISOString(),
-    });
+    await db('users').where({ id: req.user!.id }).update({ puter_token: token, updated_at: new Date().toISOString() });
     res.json({ success: true, message: 'Puter Token berhasil disimpan' });
-  } catch {
-    res.status(500).json({ success: false, error: 'Gagal simpan token' });
-  }
+  } catch { res.status(500).json({ success: false, error: 'Gagal simpan token' }); }
 });
 
-/**
- * PATCH /api/auth/link-whatsapp
- * Tautkan WhatsApp LID/JID ke account ini (dipakai dari web setelah login)
- * Mendukung: lid, jid (opsional), phone (opsional untuk update jika beda)
- */
+// ─── PATCH /api/auth/link-whatsapp ───────────────────────────────────────────
 router.patch('/link-whatsapp', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { lid, jid, phone } = req.body;
-    if (!lid) {
-      res.status(400).json({ success: false, error: 'LID tidak ditemukan' });
-      return;
-    }
-
-    const updates: Record<string, any> = {
-      whatsapp_lid: lid,
-      updated_at: new Date().toISOString(),
-    };
-    // Opsional update phone jika berbeda (misalnya nomor baru)
+    const { lid, phone } = req.body;
+    if (!lid) { res.status(400).json({ success: false, error: 'LID tidak ditemukan' }); return; }
+    const updates: any = { whatsapp_lid: lid, updated_at: new Date().toISOString() };
     if (phone) updates.phone = phone;
-
     await db('users').where({ id: req.user!.id }).update(updates);
-    console.log(`🔗 [Auth] User ${req.user!.id} re-linked WA: lid=${lid} | jid=${jid || 'n/a'} | phone=${phone || 'n/a'}`);
     res.json({ success: true, message: 'WhatsApp ID berhasil ditautkan' });
-  } catch {
-    res.status(500).json({ success: false, error: 'Gagal tautkan WhatsApp' });
-  }
+  } catch { res.status(500).json({ success: false, error: 'Gagal tautkan WhatsApp' }); }
 });
 
-/**
- * GET /api/auth/wa-relink-init
- * Dipanggil oleh WA Bot: generate short-lived JWT untuk relink WA tanpa login manual.
- * User diidentifikasi via phone (dari JID/LID yang terdeteksi WA).
- * Token berlaku 15 menit, berisi { userId, lid, phone, purpose: 'wa-relink' }.
- */
-router.get('/wa-relink-init', async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { phone, lid } = req.query as { phone?: string; lid?: string };
-    if (!phone) {
-      res.status(400).json({ success: false, error: 'Phone wajib disertakan' });
-      return;
-    }
-    const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
-    if (!user) {
-      res.status(404).json({ success: false, error: 'User tidak ditemukan' });
-      return;
-    }
-    // Generate token khusus re-link (15 menit)
-    const relinkToken = jwt.sign(
-      { userId: user.id, lid: lid || null, phone, purpose: 'wa-relink' },
-      process.env.JWT_SECRET || 'secret',
-      { expiresIn: '15m' }
-    );
-    res.json({ success: true, token: relinkToken, name: user.name });
-  } catch {
-    res.status(500).json({ success: false, error: 'Gagal generate relink token' });
-  }
-});
-
-/**
- * POST /api/auth/wa-relink
- * Dipakai dari frontend (tanpa login wajib, tapi pakai relinkToken dari WA).
- * Memvalidasi token re-link dan update whatsapp_lid user di DB.
- */
-router.post('/wa-relink', async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { relinkToken, lid, phone } = req.body;
-    if (!relinkToken || !lid) {
-      res.status(400).json({ success: false, error: 'relinkToken dan lid diperlukan' });
-      return;
-    }
-
-    let payload: any;
-    try {
-      payload = jwt.verify(relinkToken, process.env.JWT_SECRET || 'secret');
-    } catch {
-      res.status(401).json({ success: false, error: 'Token re-link tidak valid atau sudah kadaluarsa. Silakan minta link baru dari bot.' });
-      return;
-    }
-
-    if (payload.purpose !== 'wa-relink') {
-      res.status(403).json({ success: false, error: 'Token tidak valid untuk re-link WA' });
-      return;
-    }
-
-    const updates: Record<string, any> = {
-      whatsapp_lid: lid,
-      updated_at: new Date().toISOString(),
-    };
-    if (phone) updates.phone = phone;
-
-    await db('users').where({ id: payload.userId }).update(updates);
-    console.log(`🔗 [Auth] WA Re-link berhasil untuk user ${payload.userId}: lid=${lid}`);
-
-    // Kembalikan juga JWT login biasa agar user langsung terlogin di web
-    const accessToken = jwt.sign({ id: payload.userId }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
-    const user = await db('users').where({ id: payload.userId }).first();
-    const { password_hash: _, ...safeUser } = user;
-    res.json({ success: true, message: 'WhatsApp berhasil ditautkan ulang!', data: { user: safeUser, token: accessToken } });
-  } catch {
-    res.status(500).json({ success: false, error: 'Gagal proses re-link' });
-  }
-});
-
-
-/**
- * GET /api/auth/check-phone/:phone
- */
+// ─── GET /api/auth/check-phone/:phone ────────────────────────────────────────
 router.get('/check-phone/:phone', async (req: Request, res: Response) => {
   try {
     const { phone } = req.params;
     const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
-    res.json({ 
-      success: true, 
-      exists: !!user,
-      name: user?.name // Kirim nama jika ada untuk menyapa
-    });
-  } catch {
-    res.status(500).json({ success: false, error: 'Gagal cek nomor' });
-  }
+    res.json({ success: true, exists: !!user, name: user?.name });
+  } catch { res.status(500).json({ success: false, error: 'Gagal cek nomor' }); }
 });
 
-// ─── WA Magic Link Sessions ───────────────────────────────────────────────
+// ─── WA Magic Sessions ────────────────────────────────────────────────────────
 
-/**
- * POST /api/auth/wa-magic-session
- * [Internal] Dipakai oleh WA Bot untuk membuat session baru.
- * Bisa diakses tanpa auth karena dipanggil dari dalam server.
- */
 router.post('/wa-magic-session', async (req: Request, res: Response): Promise<void> => {
   try {
     const { phone, lid, jid, user_id, purpose } = req.body;
-    if (!purpose) {
-      res.status(400).json({ success: false, error: 'purpose wajib diisi' });
-      return;
-    }
+    if (!purpose) { res.status(400).json({ success: false, error: 'purpose wajib' }); return; }
     const id = uuidv4();
-    const now = new Date().toISOString();
-    await db('wa_magic_sessions').insert({ id, phone, lid, jid, user_id: user_id || null, purpose, status: 'pending', created_at: now });
+    await db('wa_magic_sessions').insert({ id, phone, lid, jid, user_id: user_id || null, purpose, status: 'pending', created_at: new Date().toISOString() });
     res.json({ success: true, sessionId: id });
-  } catch (err) {
-    console.error('[wa-magic-session create]', err);
-    res.status(500).json({ success: false, error: 'Gagal membuat session' });
-  }
+  } catch { res.status(500).json({ success: false, error: 'Gagal membuat session' }); }
 });
 
-/**
- * GET /api/auth/wa-magic-session/:sessionId
- * [Publik] Dipakai frontend untuk mendapatkan info session.
- */
 router.get('/wa-magic-session/:sessionId', async (req: Request, res: Response): Promise<void> => {
   try {
     const session = await db('wa_magic_sessions').where({ id: req.params.sessionId }).first();
-    if (!session) {
-      res.status(404).json({ success: false, error: 'Session tidak ditemukan' });
-      return;
-    }
-    if (session.status === 'completed') {
-      res.status(410).json({ success: false, error: 'Session sudah selesai dan tidak aktif lagi', completed: true });
-      return;
-    }
-    // Kembalikan info yang dibutuhkan frontend (tanpa data sensitif dari DB user lain)
+    if (!session) { res.status(404).json({ success: false, error: 'Session tidak ditemukan' }); return; }
+    if (session.status === 'completed') { res.status(410).json({ success: false, error: 'Session sudah selesai', completed: true }); return; }
     let userName: string | null = null;
     if (session.user_id) {
       const u = await db('users').where({ id: session.user_id }).select('name').first();
       userName = u?.name || null;
     }
     res.json({ success: true, data: { purpose: session.purpose, phone: session.phone, lid: session.lid, userName } });
-  } catch {
-    res.status(500).json({ success: false, error: 'Gagal mengambil session' });
-  }
+  } catch { res.status(500).json({ success: false, error: 'Gagal mengambil session' }); }
 });
 
-/**
- * POST /api/auth/wa-magic-session/:sessionId/complete
- * [Publik via sessionId as auth] Frontend memanggil ini setelah Puter OAuth sukses.
- * Menyimpan token, update/create user, invalidate session, dan return JWT login.
- */
+// POST /api/auth/wa-magic-session/:sessionId/complete
+// Setelah Puter OAuth: auto-verify phone (WA bot delivery = proven), return needs_password flag.
+// Jika user baru: buat akun + set password via POST /auth/wa-magic-session/set-password
 router.post('/wa-magic-session/:sessionId/complete', async (req: Request, res: Response): Promise<void> => {
   try {
     const session = await db('wa_magic_sessions').where({ id: req.params.sessionId, status: 'pending' }).first();
-    if (!session) {
-      res.status(404).json({ success: false, error: 'Session tidak valid atau sudah selesai' });
-      return;
-    }
+    if (!session) { res.status(404).json({ success: false, error: 'Session tidak valid atau sudah selesai' }); return; }
 
-    const { puter_token, puter_user_id, puter_name } = req.body;
-    if (!puter_token) {
-      res.status(400).json({ success: false, error: 'puter_token wajib diisi' });
-      return;
-    }
+    const { puter_token, puter_user_id, puter_name, puter_email } = req.body;
+    if (!puter_token) { res.status(400).json({ success: false, error: 'puter_token wajib diisi' }); return; }
 
     const now = new Date().toISOString();
     let userId = session.user_id;
+    let isNew = false;
 
     if (session.purpose === 'full-setup') {
-      // User belum terdaftar sama sekali — buat akun baru
-      if (!session.phone) {
-        res.status(400).json({ success: false, error: 'Nomor HP tidak terdeteksi, tidak bisa buat akun otomatis' });
-        return;
-      }
-      // Cek ulang apakah sudah ada (race condition guard)
+      if (!session.phone) { res.status(400).json({ success: false, error: 'Nomor HP tidak terdeteksi' }); return; }
       const existing = await db('users').where('phone', 'like', `%${session.phone.slice(-9)}%`).first();
       if (existing) {
         userId = existing.id;
       } else {
+        isNew = true;
         userId = uuidv4();
-        const name = puter_name || `User_${session.phone.slice(-4)}`;
         await db('users').insert({
           id: userId,
           phone: session.phone,
-          name,
+          name: puter_name || `User_${session.phone.slice(-4)}`,
+          email: puter_email?.toLowerCase() || null,
+          email_verified: !!puter_email,
           role: 'konsumen',
-          is_verified: false,
+          // Phone proven via WA bot delivery → auto-verified, no OTP needed
+          is_verified: true,
+          phone_verified: true,
           puter_user_id: puter_user_id || null,
           puter_token,
           whatsapp_lid: session.lid || null,
-          created_at: now,
-          updated_at: now,
+          created_at: now, updated_at: now,
         });
-        // Buat wallet otomatis
-        await db('wallets').insert({
-          id: uuidv4(), user_id: userId, balance: 0, pending_balance: 0,
-          total_earned: 0, total_withdrawn: 0, created_at: now, updated_at: now,
-        });
-        console.log(`🆕 [Auth] Auto-created user via WA magic: ${userId} (${name}, ${session.phone})`);
+        await db('wallets').insert({ id: uuidv4(), user_id: userId, balance: 0, pending_balance: 0, total_earned: 0, total_withdrawn: 0, created_at: now, updated_at: now });
       }
     }
 
-    // Update user yang sudah ada (connect-puter / relink / atau user baru di atas)
-    const updates: Record<string, any> = { puter_token, updated_at: now };
+    // Update all users: puter token, LID, phone_verified=true (bot delivery = phone proven)
+    const updates: any = { puter_token, updated_at: now, phone_verified: true, is_verified: true };
     if (puter_user_id) updates.puter_user_id = puter_user_id;
+    if (puter_email) { updates.email = puter_email.toLowerCase(); updates.email_verified = true; }
     if (session.lid) updates.whatsapp_lid = session.lid;
+    if (session.phone) updates.phone = session.phone;
     await db('users').where({ id: userId }).update(updates);
-    console.log(`🔗 [Auth] Magic session completed. User ${userId} | purpose: ${session.purpose} | lid: ${session.lid}`);
 
     // Invalidate session
     await db('wa_magic_sessions').where({ id: req.params.sessionId }).update({ status: 'completed', completed_at: now });
 
-    // Kembalikan JWT agar user langsung terlogin di web jika mau
-    const accessToken = jwt.sign({ id: userId }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
     const user = await db('users').where({ id: userId }).first();
-    const { password_hash: _, ...safeUser } = user;
-    res.json({ success: true, message: 'Puter berhasil dihubungkan dan WhatsApp tertaut!', data: { user: safeUser, token: accessToken } });
+    const needsPassword = !user.password_hash;
+
+    const accessToken = signToken(userId);
+    res.json({
+      success: true,
+      message: 'Puter berhasil dihubungkan!',
+      data: { user: safeUser(user), token: accessToken, is_new: isNew, needs_password: needsPassword },
+    });
   } catch (err) {
     console.error('[wa-magic-session complete]', err);
     res.status(500).json({ success: false, error: 'Gagal menyelesaikan setup' });
   }
 });
 
-export default router;
+// POST /api/auth/wa-magic-session/set-password
+// (authenticated) Set password setelah magic link setup
+router.post('/wa-magic-session/set-password', requireAuth, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { password, retype_password, email } = req.body;
+    if (!password) { res.status(400).json({ success: false, error: 'Password wajib diisi' }); return; }
+    if (password !== retype_password) { res.status(400).json({ success: false, error: 'Password tidak cocok' }); return; }
+    const pwErr = validatePassword(password);
+    if (pwErr) { res.status(400).json({ success: false, error: pwErr }); return; }
 
+    const updates: any = { password_hash: await bcrypt.hash(password, 10), updated_at: new Date().toISOString() };
+
+    let emailVerifyToken: string | null = null;
+    if (email) {
+      const existsEmail = await db('users').whereRaw('LOWER(email) = ?', [email.toLowerCase()]).whereNot({ id: req.user!.id }).first();
+      if (existsEmail) { res.status(409).json({ success: false, error: 'Email sudah digunakan akun lain' }); return; }
+      emailVerifyToken = uuidv4();
+      updates.email = email.toLowerCase();
+      updates.email_verified = false;
+      updates.email_verify_token = emailVerifyToken;
+      updates.email_verify_expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    }
+
+    await db('users').where({ id: req.user!.id }).update(updates);
+
+    if (email && emailVerifyToken) {
+      const u = await db('users').where({ id: req.user!.id }).first();
+      sendVerificationEmail(email, emailVerifyToken, u.name).catch(console.error);
+    }
+
+    const user = await db('users').where({ id: req.user!.id }).first();
+    res.json({ success: true, message: 'Password berhasil disimpan!', data: { user: safeUser(user) } });
+  } catch (err) {
+    console.error('[wa-magic set-password]', err);
+    res.status(500).json({ success: false, error: 'Gagal menyimpan password' });
+  }
+});
+
+// ─── wa-relink (legacy, kept for compat) ─────────────────────────────────────
+router.get('/wa-relink-init', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { phone, lid } = req.query as { phone?: string; lid?: string };
+    if (!phone) { res.status(400).json({ success: false, error: 'Phone wajib' }); return; }
+    const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+    if (!user) { res.status(404).json({ success: false, error: 'User tidak ditemukan' }); return; }
+    const relinkToken = jwt.sign({ userId: user.id, lid: lid || null, phone, purpose: 'wa-relink' }, JWT_SECRET(), { expiresIn: '15m' });
+    res.json({ success: true, token: relinkToken, name: user.name });
+  } catch { res.status(500).json({ success: false, error: 'Gagal generate token' }); }
+});
+
+router.post('/wa-relink', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { relinkToken, lid, phone } = req.body;
+    if (!relinkToken || !lid) { res.status(400).json({ success: false, error: 'relinkToken dan lid diperlukan' }); return; }
+    let payload: any;
+    try { payload = jwt.verify(relinkToken, JWT_SECRET()); } catch { res.status(401).json({ success: false, error: 'Token tidak valid' }); return; }
+    if (payload.purpose !== 'wa-relink') { res.status(403).json({ success: false, error: 'Token tidak valid' }); return; }
+    const updates: any = { whatsapp_lid: lid, updated_at: new Date().toISOString() };
+    if (phone) updates.phone = phone;
+    await db('users').where({ id: payload.userId }).update(updates);
+    const user = await db('users').where({ id: payload.userId }).first();
+    res.json({ success: true, message: 'WhatsApp berhasil ditautkan ulang!', data: { user: safeUser(user), token: signToken(payload.userId) } });
+  } catch { res.status(500).json({ success: false, error: 'Gagal re-link' }); }
+});
+
+export default router;

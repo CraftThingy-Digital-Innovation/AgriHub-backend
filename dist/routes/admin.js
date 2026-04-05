@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -191,6 +224,59 @@ router.post('/komoditas', async (req, res) => {
         const id = (0, uuid_1.v4)();
         await (0, knex_1.default)('komoditas').insert({ id, nama, kategori, satuan, deskripsi: deskripsi || null });
         res.status(201).json({ success: true, data: { id } });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+// ─── GET /api/admin/settings ─────────────────────────────────────────────────
+// Ambil semua settings, sembunyikan nilai secret kecuali ditandai reveal
+router.get('/settings', async (_req, res) => {
+    try {
+        const settings = await (0, knex_1.default)('app_settings').orderBy('group').orderBy('key');
+        // Sensor nilai secret
+        const masked = settings.map((s) => ({
+            ...s,
+            value: s.is_secret && s.value ? '••••••••' : s.value,
+        }));
+        res.json({ success: true, data: masked });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+// ─── PATCH /api/admin/settings ───────────────────────────────────────────────
+// Update satu atau banyak setting sekaligus: body = { key: value, ... }
+router.patch('/settings', async (req, res) => {
+    try {
+        const updates = req.body;
+        const now = new Date().toISOString();
+        for (const [key, value] of Object.entries(updates)) {
+            // Jika value adalah masked (tidak berubah), skip
+            if (value === '••••••••')
+                continue;
+            await (0, knex_1.default)('app_settings').where({ key }).update({ value, updated_at: now });
+        }
+        res.json({ success: true, message: 'Pengaturan berhasil disimpan' });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+// ─── POST /api/admin/settings/test-smtp ──────────────────────────────────────
+router.post('/settings/test-smtp', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            res.status(400).json({ success: false, error: 'Email penerima diperlukan' });
+            return;
+        }
+        const { sendEmail } = await Promise.resolve().then(() => __importStar(require('../services/emailService')));
+        const ok = await sendEmail(email, '✅ Test Email AgriHub', '<h2>AgriHub SMTP berfungsi dengan baik! 🌾</h2><p>Jika Anda menerima email ini, konfigurasi SMTP sudah benar.</p>');
+        if (ok)
+            res.json({ success: true, message: `Email test dikirim ke ${email}` });
+        else
+            res.status(500).json({ success: false, error: 'SMTP belum dikonfigurasi atau gagal kirim. Cek konfigurasi.' });
     }
     catch (err) {
         res.status(500).json({ success: false, error: err.message });

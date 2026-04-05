@@ -171,4 +171,46 @@ router.post('/komoditas', async (req, res: Response): Promise<void> => {
   } catch (err) { res.status(500).json({ success: false, error: (err as Error).message }); }
 });
 
+// ─── GET /api/admin/settings ─────────────────────────────────────────────────
+// Ambil semua settings, sembunyikan nilai secret kecuali ditandai reveal
+router.get('/settings', async (_req, res: Response): Promise<void> => {
+  try {
+    const settings = await db('app_settings').orderBy('group').orderBy('key');
+    // Sensor nilai secret
+    const masked = settings.map((s: any) => ({
+      ...s,
+      value: s.is_secret && s.value ? '••••••••' : s.value,
+    }));
+    res.json({ success: true, data: masked });
+  } catch (err) { res.status(500).json({ success: false, error: (err as Error).message }); }
+});
+
+// ─── PATCH /api/admin/settings ───────────────────────────────────────────────
+// Update satu atau banyak setting sekaligus: body = { key: value, ... }
+router.patch('/settings', async (req, res: Response): Promise<void> => {
+  try {
+    const updates = req.body as Record<string, string>;
+    const now = new Date().toISOString();
+    for (const [key, value] of Object.entries(updates)) {
+      // Jika value adalah masked (tidak berubah), skip
+      if (value === '••••••••') continue;
+      await db('app_settings').where({ key }).update({ value, updated_at: now });
+    }
+    res.json({ success: true, message: 'Pengaturan berhasil disimpan' });
+  } catch (err) { res.status(500).json({ success: false, error: (err as Error).message }); }
+});
+
+// ─── POST /api/admin/settings/test-smtp ──────────────────────────────────────
+router.post('/settings/test-smtp', async (req, res: Response): Promise<void> => {
+  try {
+    const { email } = req.body;
+    if (!email) { res.status(400).json({ success: false, error: 'Email penerima diperlukan' }); return; }
+    const { sendEmail } = await import('../services/emailService');
+    const ok = await sendEmail(email, '✅ Test Email AgriHub', '<h2>AgriHub SMTP berfungsi dengan baik! 🌾</h2><p>Jika Anda menerima email ini, konfigurasi SMTP sudah benar.</p>');
+    if (ok) res.json({ success: true, message: `Email test dikirim ke ${email}` });
+    else res.status(500).json({ success: false, error: 'SMTP belum dikonfigurasi atau gagal kirim. Cek konfigurasi.' });
+  } catch (err) { res.status(500).json({ success: false, error: (err as Error).message }); }
+});
+
 export default router;
+
