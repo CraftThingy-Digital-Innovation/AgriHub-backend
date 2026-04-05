@@ -9,10 +9,13 @@ export interface User {
   id: string;
   phone: string;          // WhatsApp number (primary key untuk WA user)
   name: string;
-  email?: string;
+  username?: string | null;
+  email?: string | null;
   role: 'petani' | 'konsumen' | 'distributor' | 'admin';
   avatar_url?: string;
   is_verified: boolean;
+  phone_verified: boolean;
+  email_verified: boolean;
   puter_user_id?: string;
   puter_token?: string | null;
   whatsapp_lid?: string | null;

@@ -144,14 +144,17 @@ router.post('/login', async (req, res) => {
             user = await (0, knex_1.default)('users').whereRaw('LOWER(username) = ?', [value]).first();
         }
         if (!user?.password_hash) {
+            console.log(`[Login] ${field} '${value}' found, but HAS NO PASSWORD_HASH.`);
             res.status(401).json({ success: false, error: 'Akun tidak ditemukan atau belum punya password' });
             return;
         }
         const valid = await bcryptjs_1.default.compare(password, user.password_hash);
         if (!valid) {
+            console.log(`[Login] ${field} '${value}' found. PASSWORD MISMATCH.`);
             res.status(401).json({ success: false, error: 'Password salah' });
             return;
         }
+        console.log(`[Login] ${field} '${value}' SUCCESS.`);
         res.json({ success: true, data: { user: safeUser(user), token: signToken(user.id) } });
     }
     catch (err) {
@@ -181,9 +184,11 @@ router.post('/login-puter', async (req, res) => {
             // Akun baru via Puter — perlu phone + password setelah ini
             const tempUsername = puter_username?.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 30) || null;
             const id = (0, uuid_1.v4)();
+            // MySQL schema mengharuskan phone NOT NULL — gunakan placeholder unik hingga user isi sendiri
+            const tempPhone = `PUTER_${id.slice(0, 8)}`;
             await (0, knex_1.default)('users').insert({
                 id,
-                phone: null,
+                phone: tempPhone,
                 name: puter_name || puter_username || 'Pengguna Puter',
                 username: tempUsername,
                 email: puter_email?.toLowerCase() || null,
@@ -234,8 +239,10 @@ router.post('/complete-puter-profile', auth_1.requireAuth, async (req, res) => {
             return;
         }
         const updates = { phone, updated_at: new Date().toISOString() };
-        if (password)
+        if (password && password.trim() !== '') {
             updates.password_hash = await bcryptjs_1.default.hash(password, 10);
+            console.log(`[CompleteProfile] Password hash updated for user ${req.user.id}`);
+        }
         await (0, knex_1.default)('users').where({ id: req.user.id }).update(updates);
         // Kirim OTP ke WA
         const otp = generateOTP();
@@ -631,6 +638,124 @@ router.post('/wa-relink', async (req, res) => {
     }
     catch {
         res.status(500).json({ success: false, error: 'Gagal re-link' });
+    }
+});
+// ─── Forgot Password Flow ───────────────────────────────────────────────────
+router.post('/forgot-password', async (req, res) => {
+    try {
+        const { identifier } = req.body;
+        if (!identifier) {
+            res.status(400).json({ success: false, error: 'Identifier wajib' });
+            return;
+        }
+        const { field, value } = normalizeIdentifier(identifier);
+        let user;
+        if (field === 'phone')
+            user = await (0, knex_1.default)('users').where('phone', 'like', `%${value.slice(-9)}%`).first();
+        else if (field === 'email')
+            user = await (0, knex_1.default)('users').whereRaw('LOWER(email) = ?', [value]).first();
+        else
+            user = await (0, knex_1.default)('users').whereRaw('LOWER(username) = ?', [value]).first();
+        if (!user) {
+            res.status(404).json({ success: false, error: 'User tidak ditemukan' });
+            return;
+        }
+        // Logic: Default WA, but if both verified, allow choice
+        const methods = ['wa'];
+        if (user.email && user.email_verified)
+            methods.push('email');
+        res.json({ success: true, methods, phone: user.phone, email: user.email });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Server error' });
+    }
+});
+router.post('/request-reset-otp', async (req, res) => {
+    try {
+        const { identifier, method } = req.body;
+        const { field, value } = normalizeIdentifier(identifier);
+        let user;
+        if (field === 'phone')
+            user = await (0, knex_1.default)('users').where('phone', 'like', `%${value.slice(-9)}%`).first();
+        else if (field === 'email')
+            user = await (0, knex_1.default)('users').whereRaw('LOWER(email) = ?', [value]).first();
+        else
+            user = await (0, knex_1.default)('users').whereRaw('LOWER(username) = ?', [value]).first();
+        if (!user) {
+            res.status(404).json({ success: false, error: 'User tidak ditemukan' });
+            return;
+        }
+        const otp = generateOTP();
+        const expires = otpExpiry();
+        await (0, knex_1.default)('users').where({ id: user.id }).update({ phone_otp: otp, phone_otp_expires: expires });
+        if (method === 'email' && user.email) {
+            await (0, emailService_1.sendVerificationEmail)(user.email, otp, user.name); // Reusing for simplicity or specialized mail
+        }
+        else {
+            await whatsappBot_1.sendWAMessage(user.phone, `🌾 *AgriHub* — Kode RESET PASSWORD Anda:\n\n*${otp}*\n\n_Jangan bagikan kode ini kepada siapapun._`);
+        }
+        res.json({ success: true, message: 'OTP terkirim' });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Gagal mengirim OTP' });
+    }
+});
+router.post('/verify-reset-otp', async (req, res) => {
+    try {
+        const { identifier, otp } = req.body;
+        const { field, value } = normalizeIdentifier(identifier);
+        let user;
+        if (field === 'phone')
+            user = await (0, knex_1.default)('users').where('phone', 'like', `%${value.slice(-9)}%`).first();
+        else if (field === 'email')
+            user = await (0, knex_1.default)('users').whereRaw('LOWER(email) = ?', [value]).first();
+        else
+            user = await (0, knex_1.default)('users').whereRaw('LOWER(username) = ?', [value]).first();
+        if (!user || user.phone_otp !== otp?.toString()) {
+            res.status(400).json({ success: false, error: 'OTP salah' });
+            return;
+        }
+        if (new Date(user.phone_otp_expires) < new Date()) {
+            res.status(400).json({ success: false, error: 'OTP kadaluarsa' });
+            return;
+        }
+        res.json({ success: true, message: 'OTP valid' });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Server error' });
+    }
+});
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { identifier, otp, password } = req.body;
+        const pwErr = validatePassword(password);
+        if (pwErr) {
+            res.status(400).json({ success: false, error: pwErr });
+            return;
+        }
+        const { field, value } = normalizeIdentifier(identifier);
+        let user;
+        if (field === 'phone')
+            user = await (0, knex_1.default)('users').where('phone', 'like', `%${value.slice(-9)}%`).first();
+        else if (field === 'email')
+            user = await (0, knex_1.default)('users').whereRaw('LOWER(email) = ?', [value]).first();
+        else
+            user = await (0, knex_1.default)('users').whereRaw('LOWER(username) = ?', [value]).first();
+        if (!user || user.phone_otp !== otp?.toString()) {
+            res.status(400).json({ success: false, error: 'Sesi reset tidak valid' });
+            return;
+        }
+        const password_hash = await bcryptjs_1.default.hash(password, 10);
+        await (0, knex_1.default)('users').where({ id: user.id }).update({
+            password_hash,
+            phone_otp: null,
+            phone_otp_expires: null,
+            updated_at: new Date().toISOString()
+        });
+        res.json({ success: true, message: 'Password berhasil diubah' });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Gagal reset password' });
     }
 });
 exports.default = router;

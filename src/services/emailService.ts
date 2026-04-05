@@ -1,3 +1,4 @@
+
 import nodemailer from 'nodemailer';
 import db from '../config/knex';
 
@@ -28,12 +29,22 @@ async function createTransporter() {
   const cfg = await getSmtpConfig();
   if (!cfg.user || !cfg.pass) return null;
 
+  // Auto-correct: port 465 = SSL (secure: true), port 587/25 = STARTTLS (secure: false)
+  // Jika admin salah setting, kita override supaya jangan mismatch
+  const port = cfg.port;
+  const secure = port === 465 ? true : false;
+  const requireTLS = port === 587;
+
   return nodemailer.createTransport({
     host: cfg.host || 'smtp.gmail.com',
-    port: cfg.port,
-    secure: cfg.secure,
+    port,
+    secure,           // true hanya untuk 465 (SSL langsung)
+    requireTLS,       // true untuk 587 agar paksa upgrade ke STARTTLS
     auth: { user: cfg.user, pass: cfg.pass },
-    tls: { rejectUnauthorized: false },
+    tls: {
+      rejectUnauthorized: false,  // toleran terhadap self-signed cert
+      minVersion: 'TLSv1.2',
+    },
   });
 }
 

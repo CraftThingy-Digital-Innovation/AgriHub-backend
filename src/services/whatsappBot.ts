@@ -33,6 +33,10 @@ const logger = pino({ level: 'silent' });
 // Sesi penanggung jawab grup (Map<groupJid + senderLid, { userId, expires }>)
 const pendingAssignments = new Map<string, { userId: string, expires: number }>();
 
+// ─── Dedup cache: mencegah pesan diproses dua kali saat reconnect/replay ────
+const processedMsgIds = new Set<string>();
+const MAX_PROCESSED_CACHE = 500;
+
 let isInitializing = false;
 let isConnecting = false;
 let isInitializedFlag = false;
@@ -395,7 +399,22 @@ export async function connectWhatsApp(): Promise<void> {
       for (const msg of messages) {
         if (!msg.message || msg.key.fromMe) continue;
 
-        console.log(`📩 [WA] Processing Msg:`, msg.key.id);
+        // ── Dedup: skip jika pesan ini sudah pernah diproses ────────────────
+        const msgId = msg.key.id || '';
+        if (msgId && processedMsgIds.has(msgId)) {
+          console.log(`⏭️ [WA] Skipping duplicate msg: ${msgId}`);
+          continue;
+        }
+        if (msgId) {
+          processedMsgIds.add(msgId);
+          if (processedMsgIds.size > MAX_PROCESSED_CACHE) {
+            // Hapus entri paling lama untuk jaga memory
+            const first = processedMsgIds.values().next().value;
+            if (first) processedMsgIds.delete(first);
+          }
+        }
+
+        console.log(`📩 [WA] Processing Msg:`, msgId);
 
         // Handle Documents (PDF, etc.) - Deep Search
         const doc = findDocumentInMessage(msg.message);
@@ -560,6 +579,15 @@ export function getWAStatus() {
  * Mengirim pesan WhatsApp dengan proteksi koneksi (Wait & Retry)
  */
 export async function sendWAMessage(jid: string, text: string, options?: any): Promise<any> {
+  // ── Normalize JID: jika cuma nomor HP, ubah jadi JID resmi ──────────────────
+  let targetJid = jid;
+  if (targetJid && !targetJid.includes('@')) {
+    let clean = targetJid.replace(/[^0-9]/g, '');
+    if (clean.startsWith('0')) clean = '62' + clean.slice(1);
+    else if (clean.startsWith('8')) clean = '62' + clean;
+    targetJid = `${clean}@s.whatsapp.net`;
+  }
+
   // Jika sedang connecting, tunggu sebentar (max 15 detik)
   if (!isConnected && isConnecting) {
     let waitCount = 0;
@@ -579,12 +607,12 @@ export async function sendWAMessage(jid: string, text: string, options?: any): P
   }
 
   if (!waSocket || !isConnected) {
-    console.error(`❌ [WA] Failed to send message to ${jid}: Bot NOT CONNECTED after wait.`);
+    console.error(`❌ [WA] Failed to send message to ${targetJid}: Bot NOT CONNECTED after wait.`);
     return undefined;
   }
 
   try {
-    return await waSocket.sendMessage(jid, { text, ...options });
+    return await waSocket.sendMessage(targetJid, { text, ...options });
   } catch (err) {
     // If it fails with "Connection Closed", maybe it just dropped. Try once more if isConnected is still true or becomes true.
     const errMsg = (err as Error).message;
@@ -592,10 +620,10 @@ export async function sendWAMessage(jid: string, text: string, options?: any): P
       console.warn(`⚠️ [WA] Send failed (${errMsg}), retrying once in 2s...`);
       await new Promise(r => setTimeout(r, 2000));
       if (waSocket && isConnected) {
-        try { return await waSocket.sendMessage(jid, { text, ...options }); } catch { }
+        try { return await waSocket.sendMessage(targetJid, { text, ...options }); } catch { }
       }
     }
-    console.error(`❌ [WA] Failed to send message to ${jid}:`, err);
+    console.error(`❌ [WA] Failed to send message to ${targetJid}:`, err);
     return undefined;
   }
 }
@@ -1183,16 +1211,24 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
       })();
       console.log(`🔍 [WA Private] sender=${sender} | jid=${jid} | phone=${detectedPhone} | user_found=${!!user} | has_token=${!!user?.puter_token} | uid=${user?.id || 'null'}`);
 
-      // Helper: buat magic session & kembalikan URL
+      // Helper: buat magic session & kembalikan URL — langsung via DB (tidak via HTTP)
       const createMagicLink = async (purpose: string, userId?: string): Promise<string | null> => {
         try {
-          const sessionRes = await axios.post(
-            `http://localhost:${process.env.PORT || 3000}/api/auth/wa-magic-session`,
-            { phone: detectedPhone || null, lid: sender, jid, user_id: userId || null, purpose }
-          );
-          return `https://agrihub.rumah-genbi.com/wa-setup?session=${sessionRes.data.sessionId}&bot=${botPhone}`;
+          const sessionId = uuidv4();
+          const botPhone = waSocket?.user?.id?.split(':')[0] || '';
+          await db('wa_magic_sessions').insert({
+            id: sessionId,
+            phone: detectedPhone || null,
+            lid: sender,
+            jid,
+            user_id: userId || null,
+            purpose,
+            status: 'pending',
+            created_at: new Date().toISOString(),
+          });
+          return `https://agrihub.rumah-genbi.com/wa-setup?session=${sessionId}&bot=${botPhone}`;
         } catch (e) {
-          console.error('[WA] Gagal buat magic session:', e);
+          console.error('[WA] Gagal buat magic session via DB:', e);
           return null;
         }
       };

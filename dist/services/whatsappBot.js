@@ -44,7 +44,6 @@ const baileys_1 = __importStar(require("baileys"));
 const pino_1 = __importDefault(require("pino"));
 const qrcode_terminal_1 = __importDefault(require("qrcode-terminal"));
 const knex_1 = __importDefault(require("../config/knex"));
-const axios_1 = __importDefault(require("axios"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const aiService_1 = require("./aiService");
 const biteshipService_1 = require("./biteshipService");
@@ -61,6 +60,9 @@ let qrCode = '';
 const logger = (0, pino_1.default)({ level: 'silent' });
 // Sesi penanggung jawab grup (Map<groupJid + senderLid, { userId, expires }>)
 const pendingAssignments = new Map();
+// ─── Dedup cache: mencegah pesan diproses dua kali saat reconnect/replay ────
+const processedMsgIds = new Set();
+const MAX_PROCESSED_CACHE = 500;
 let isInitializing = false;
 let isConnecting = false;
 let isInitializedFlag = false;
@@ -399,7 +401,22 @@ async function connectWhatsApp() {
             for (const msg of messages) {
                 if (!msg.message || msg.key.fromMe)
                     continue;
-                console.log(`📩 [WA] Processing Msg:`, msg.key.id);
+                // ── Dedup: skip jika pesan ini sudah pernah diproses ────────────────
+                const msgId = msg.key.id || '';
+                if (msgId && processedMsgIds.has(msgId)) {
+                    console.log(`⏭️ [WA] Skipping duplicate msg: ${msgId}`);
+                    continue;
+                }
+                if (msgId) {
+                    processedMsgIds.add(msgId);
+                    if (processedMsgIds.size > MAX_PROCESSED_CACHE) {
+                        // Hapus entri paling lama untuk jaga memory
+                        const first = processedMsgIds.values().next().value;
+                        if (first)
+                            processedMsgIds.delete(first);
+                    }
+                }
+                console.log(`📩 [WA] Processing Msg:`, msgId);
                 // Handle Documents (PDF, etc.) - Deep Search
                 const doc = findDocumentInMessage(msg.message);
                 if (doc) {
@@ -553,6 +570,16 @@ function getWAStatus() {
  * Mengirim pesan WhatsApp dengan proteksi koneksi (Wait & Retry)
  */
 async function sendWAMessage(jid, text, options) {
+    // ── Normalize JID: jika cuma nomor HP, ubah jadi JID resmi ──────────────────
+    let targetJid = jid;
+    if (targetJid && !targetJid.includes('@')) {
+        let clean = targetJid.replace(/[^0-9]/g, '');
+        if (clean.startsWith('0'))
+            clean = '62' + clean.slice(1);
+        else if (clean.startsWith('8'))
+            clean = '62' + clean;
+        targetJid = `${clean}@s.whatsapp.net`;
+    }
     // Jika sedang connecting, tunggu sebentar (max 15 detik)
     if (!isConnected && isConnecting) {
         let waitCount = 0;
@@ -570,11 +597,11 @@ async function sendWAMessage(jid, text, options) {
         }
     }
     if (!waSocket || !isConnected) {
-        console.error(`❌ [WA] Failed to send message to ${jid}: Bot NOT CONNECTED after wait.`);
+        console.error(`❌ [WA] Failed to send message to ${targetJid}: Bot NOT CONNECTED after wait.`);
         return undefined;
     }
     try {
-        return await waSocket.sendMessage(jid, { text, ...options });
+        return await waSocket.sendMessage(targetJid, { text, ...options });
     }
     catch (err) {
         // If it fails with "Connection Closed", maybe it just dropped. Try once more if isConnected is still true or becomes true.
@@ -584,12 +611,12 @@ async function sendWAMessage(jid, text, options) {
             await new Promise(r => setTimeout(r, 2000));
             if (waSocket && isConnected) {
                 try {
-                    return await waSocket.sendMessage(jid, { text, ...options });
+                    return await waSocket.sendMessage(targetJid, { text, ...options });
                 }
                 catch { }
             }
         }
-        console.error(`❌ [WA] Failed to send message to ${jid}:`, err);
+        console.error(`❌ [WA] Failed to send message to ${targetJid}:`, err);
         return undefined;
     }
 }
@@ -1142,14 +1169,25 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
                 return src.split('@')[0].replace(/[^0-9]/g, '');
             })();
             console.log(`🔍 [WA Private] sender=${sender} | jid=${jid} | phone=${detectedPhone} | user_found=${!!user} | has_token=${!!user?.puter_token} | uid=${user?.id || 'null'}`);
-            // Helper: buat magic session & kembalikan URL
+            // Helper: buat magic session & kembalikan URL — langsung via DB (tidak via HTTP)
             const createMagicLink = async (purpose, userId) => {
                 try {
-                    const sessionRes = await axios_1.default.post(`http://localhost:${process.env.PORT || 3000}/api/auth/wa-magic-session`, { phone: detectedPhone || null, lid: sender, jid, user_id: userId || null, purpose });
-                    return `https://agrihub.rumah-genbi.com/wa-setup?session=${sessionRes.data.sessionId}&bot=${botPhone}`;
+                    const sessionId = (0, uuid_1.v4)();
+                    const botPhone = waSocket?.user?.id?.split(':')[0] || '';
+                    await (0, knex_1.default)('wa_magic_sessions').insert({
+                        id: sessionId,
+                        phone: detectedPhone || null,
+                        lid: sender,
+                        jid,
+                        user_id: userId || null,
+                        purpose,
+                        status: 'pending',
+                        created_at: new Date().toISOString(),
+                    });
+                    return `https://agrihub.rumah-genbi.com/wa-setup?session=${sessionId}&bot=${botPhone}`;
                 }
                 catch (e) {
-                    console.error('[WA] Gagal buat magic session:', e);
+                    console.error('[WA] Gagal buat magic session via DB:', e);
                     return null;
                 }
             };
