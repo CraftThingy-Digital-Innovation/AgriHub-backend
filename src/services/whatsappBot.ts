@@ -679,25 +679,36 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
 
   // ── RESOLUSI IDENTITY (Link Phone & LID) ───────────────────────────────
   const isLid = sender.endsWith('@lid');
-  const participantJid = msg.key.participant || ''; // "628xxx@s.whatsapp.net" or "xxx@lid"
+  const isGroupJid = jid.endsWith('@g.us');
+  const participantJid = msg.key.participant || '';
 
-  // Coba cari pakai whatsapp_lid dulu (bisa berisi @lid ATAU @s.whatsapp.net dari command LINK)
+  // Coba cari pakai whatsapp_lid yang terikat saat ini
   let user: any = await db('users').where({ whatsapp_lid: sender }).first();
 
-  if (!user && !isLid) {
-    // Fallback pakai phone
-    const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-    user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+  // Jika tidak ketemu via LID, coba cari paksa pakai nomor HP
+  if (!user) {
+    // Pada Private Chat, seringkali remoteJid masih menyimpan nomor HP asli meski participant memakai @lid
+    const phoneSource = (isLid && !isGroupJid) ? jid : sender;
+    const phoneStr = phoneSource.split('@')[0].replace(/[^0-9]/g, '');
 
-    // Jika kita ketemu via phone, tapi msg.key.participant (jika di grup) punya LID, link-kan!
-    const participantLid = participantJid.endsWith('@lid') ? participantJid : null;
-    if (user && participantLid && user.whatsapp_lid !== participantLid) {
-      await db('users').where({ id: user.id }).update({ whatsapp_lid: participantLid });
-      console.log(`🔗 Linked LID ${participantLid} to user ${user.phone}`);
+    if (phoneStr.length > 6) {
+      user = await db('users').where('phone', 'like', `%${phoneStr.slice(-9)}%`).first();
+
+      // Jika ketemu user di DB via pencocokan string nomor HP, otomatis TAUTKAN!
+      if (user && isLid && user.whatsapp_lid !== sender) {
+        await db('users').where({ id: user.id }).update({ whatsapp_lid: sender });
+        console.log(`🔗 Auto-Linked LID ${sender} to user ${user.phone}`);
+      }
+      
+      const participantLid = participantJid.endsWith('@lid') ? participantJid : null;
+      if (user && participantLid && user.whatsapp_lid !== participantLid) {
+        await db('users').where({ id: user.id }).update({ whatsapp_lid: participantLid });
+        console.log(`🔗 Linked Participant LID ${participantLid} to user ${user.phone}`);
+      }
     }
   }
 
-  // Jika masih tidak ketemu, dan sender adalah Private Chat, kita juga coba cek whatsapp_lid = participantJid
+  // Fallback 100% terakhir: coba dari participantJid jika belum match
   if (!user && participantJid && participantJid !== sender) {
        user = await db('users').where({ whatsapp_lid: participantJid }).first();
   }
@@ -1211,19 +1222,26 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
     } else {
       // Private Chat
       if (!user) {
-        const isRealPhone = sender.endsWith('@s.whatsapp.net');
-        const decodedPhone = isRealPhone ? sender.split('@')[0].replace(/[^0-9]/g, '') : '';
+        // Jika sampai sini user masih null, berarti memang belum terdaftar atau LID belum di-link
+        // Coba ekstrak HP sekali lagi dari sumber yang paling mungkin
+        const phoneSource = (sender.endsWith('@lid') && !jid.endsWith('@g.us')) ? jid : sender;
+        const decodedPhone = phoneSource.split('@')[0].replace(/[^0-9]/g, '');
         const phoneParam = decodedPhone ? `&phone=${decodedPhone}` : '';
 
         let exists = null;
-        if (decodedPhone) {
+        if (decodedPhone.length > 5) {
           exists = await db('users').where('phone', 'like', `%${decodedPhone.slice(-9)}%`).first();
         }
 
         if (exists) {
-          await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk login dan menautkan akun secara otomatis:\n👉 https://agrihub.rumah-genbi.com/login?mode=login${phoneParam}&action=link&lid=${sender}`);
+          await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk otomatis menautkan akun:\n👉 https://agrihub.rumah-genbi.com/login?mode=login${phoneParam}&action=link&lid=${sender}`);
         } else {
-          await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
+          // Jika tidak ada deteksi HP sama sekali (Full LIDs tanpa JID murni) atau memang tidak ada di DB
+          if (!decodedPhone) {
+             await sendWAMessage(jid, `👋 *Halo! Sepertinya akun WhatsApp Anda belum tertaut dengan AgriHub.*\n\nJika Anda sudah mendaftar di Web, Anda bisa menautkan akun dengan membalas pesan ini menggunakan format:\n*LINK [Nomor HP Anda]*\nContoh: *LINK 085123456789*\n\nJika belum mendaftar, silakan daftar di sini:\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
+          } else {
+             await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
+          }
         }
         return;
       }
