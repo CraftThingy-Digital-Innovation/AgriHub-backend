@@ -37,10 +37,17 @@ router.post('/backfill', async (req, res) => {
 router.get('/map-data', async (req, res) => {
     try {
         const { date, commodity, marketType } = req.query;
-        // Default to the most recent date available ideally, but for demo:
+        // Default to the most recent date available if not specified
         let query = (0, knex_1.default)('pihps_prices').select('prov_name', 'commodity_name', 'price').avg('price as aggregate_price').groupBy('prov_name', 'commodity_name');
-        if (date)
+        if (date) {
             query = query.where('date', date);
+        }
+        else {
+            const latestRow = await (0, knex_1.default)('pihps_prices').max('date as maxDate').first();
+            if (latestRow && latestRow.maxDate) {
+                query = query.where('date', latestRow.maxDate);
+            }
+        }
         if (commodity) {
             let commoditySearch = commodity;
             const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(commoditySearch);

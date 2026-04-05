@@ -34,10 +34,17 @@ router.post('/backfill', async (req, res) => {
 router.get('/map-data', async (req, res) => {
   try {
     const { date, commodity, marketType } = req.query;
-    // Default to the most recent date available ideally, but for demo:
+    // Default to the most recent date available if not specified
     let query = db('pihps_prices').select('prov_name', 'commodity_name', 'price').avg('price as aggregate_price').groupBy('prov_name', 'commodity_name');
 
-    if (date) query = query.where('date', date as string);
+    if (date) {
+       query = query.where('date', date as string);
+    } else {
+       const latestRow = await db('pihps_prices').max('date as maxDate').first();
+       if (latestRow && latestRow.maxDate) {
+           query = query.where('date', latestRow.maxDate);
+       }
+    }
     if (commodity) {
       let commoditySearch = commodity as string;
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(commoditySearch);
