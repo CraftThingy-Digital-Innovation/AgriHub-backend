@@ -29,6 +29,7 @@ import priceRouter from './routes/price';
 import adminRouter from './routes/admin';
 import pihpsRouter from './routes/pihps';
 import { connectWhatsApp, getWAStatus } from './services/whatsappBot';
+import { initCronJobs } from './services/cronService';
 
 const app = express();
 app.set('trust proxy', 1); // Diperlukan untuk express-rate-limit di balik proxy (Hostinger/Nginx)
@@ -118,6 +119,9 @@ async function bootstrap() {
   try {
     // Auto-migrate sebelum start server
     await runMigrations();
+
+    // Start Cron Jobs and Background Scrapers
+    initCronJobs();
 
     // Start WhatsApp bot jika diaktifkan
     if (process.env.ENABLE_WHATSAPP === 'true') {

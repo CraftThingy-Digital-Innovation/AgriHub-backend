@@ -32,6 +32,7 @@ const price_1 = __importDefault(require("./routes/price"));
 const admin_1 = __importDefault(require("./routes/admin"));
 const pihps_1 = __importDefault(require("./routes/pihps"));
 const whatsappBot_1 = require("./services/whatsappBot");
+const cronService_1 = require("./services/cronService");
 const app = (0, express_1.default)();
 app.set('trust proxy', 1); // Diperlukan untuk express-rate-limit di balik proxy (Hostinger/Nginx)
 const PORT = process.env.PORT || 3000;
@@ -112,6 +113,8 @@ async function bootstrap() {
     try {
         // Auto-migrate sebelum start server
         await (0, migrate_1.runMigrations)();
+        // Start Cron Jobs and Background Scrapers
+        (0, cronService_1.initCronJobs)();
         // Start WhatsApp bot jika diaktifkan
         if (process.env.ENABLE_WHATSAPP === 'true') {
             (0, whatsappBot_1.connectWhatsApp)().catch(err => console.error('WA Bot error:', err));
