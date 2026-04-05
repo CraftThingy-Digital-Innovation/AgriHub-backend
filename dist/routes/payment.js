@@ -39,10 +39,15 @@ router.post('/create', auth_1.requireAuth, async (req, res) => {
             res.status(400).json({ success: false, error: 'Pesanan sudah dibayar atau dibatalkan' });
             return;
         }
+        const itemPrice = Math.round(order.total_amount);
+        const platformFee = order.platform_fee ? Math.round(order.platform_fee) : 0;
+        const ppnFee = order.ppn_fee ? Math.round(order.ppn_fee) : 0;
+        // Total harus BENAR-BENAR SAMA dengan jumlah dari price item_details
+        const exactGrossAmount = itemPrice + platformFee + ppnFee;
         const transactionDetails = {
             transaction_details: {
                 order_id: `AGRIHUB-${order_id.slice(-8).toUpperCase()}`,
-                gross_amount: Math.round(order.total_amount + (order.platform_fee || 0) + (order.ppn_fee || 0)),
+                gross_amount: exactGrossAmount,
             },
             customer_details: {
                 first_name: order.buyer_name,
@@ -52,19 +57,19 @@ router.post('/create', auth_1.requireAuth, async (req, res) => {
                 {
                     id: order.product_id,
                     name: order.product_name.slice(0, 50),
-                    price: Math.round(order.total_amount),
+                    price: itemPrice,
                     quantity: 1, // Midtrans requires integer quantity. Total amount scaling is used.
                 },
-                ...(order.platform_fee > 0 ? [{
+                ...(platformFee > 0 ? [{
                         id: 'platform-fee',
                         name: 'Platform AgriHub (2%)',
-                        price: Math.round(order.platform_fee),
+                        price: platformFee,
                         quantity: 1,
                     }] : []),
-                ...(order.ppn_fee > 0 ? [{
+                ...(ppnFee > 0 ? [{
                         id: 'ppn',
                         name: 'PPN 11%',
-                        price: Math.round(order.ppn_fee),
+                        price: ppnFee,
                         quantity: 1,
                     }] : []),
             ],
@@ -90,8 +95,8 @@ router.post('/create', auth_1.requireAuth, async (req, res) => {
         });
     }
     catch (err) {
-        console.error('Midtrans create error:', err);
-        res.status(500).json({ success: false, error: 'Gagal membuat transaksi pembayaran' });
+        console.error('Midtrans create error:', err?.message || err);
+        res.status(500).json({ success: false, error: 'Gagal membuat transaksi pembayaran', details: err?.message });
     }
 });
 // ─── POST /api/payment/webhook — Midtrans Notification Webhook ────────────
