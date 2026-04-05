@@ -62,6 +62,7 @@ const pendingAssignments = new Map();
 let isInitializing = false;
 let isConnecting = false;
 let isInitializedFlag = false;
+let lastLockWarning = 0;
 // ─── Baileys Version Cache ─────────────────────────────────────────────────
 // fetchLatestBaileysVersion() membuat outbound HTTP call setiap reconnect.
 // Cache ini mencegah hang saat jaringan tidak stabil.
@@ -248,8 +249,15 @@ async function connectWhatsApp() {
                 // Check if the lock is "Fresh" (< 30s)
                 const isFresh = (Date.now() - new Date(existingLock.updated_at).getTime()) < 30000;
                 if (isFresh) {
-                    console.warn(`🕒 [WA] Active instance found (PID ${lockData.pid}). Waiting 15s for takeover...`);
-                    setTimeout(() => connectWhatsApp(), 15000);
+                    // Hanya log sekali setiap 2 menit agar tidak membanjiri konsol
+                    if (!lastLockWarning || (Date.now() - lastLockWarning > 120000)) {
+                        console.warn(`🕒 [WA] Active instance found (PID ${lockData.pid}). WA Bot runs on that process. I yield.`);
+                        lastLockWarning = Date.now();
+                    }
+                    isConnected = false;
+                    isConnecting = false;
+                    // Cek lagi lebih lama agar tidak spam CPU
+                    setTimeout(() => connectWhatsApp(), 60000);
                     return;
                 }
                 else {
@@ -402,10 +410,9 @@ async function connectWhatsApp() {
         });
     }
     finally {
-        // Jika socket tidak sempat dibuat (exception sebelum makeWASocket),
-        // wajib reset isConnecting agar reconnect berikutnya tidak di-skip.
+        // Jika socket tidak sempat dibuat (exception / di-cancel)
         if (!socketCreated) {
-            console.error('❌ [WA] Socket tidak sempat dibuat, reset isConnecting.');
+            // Tidak perlu console log "Socket tidak sempat dibuat" yang malah jadi spam
             isConnecting = false;
         }
     }
