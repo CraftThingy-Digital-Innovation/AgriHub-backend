@@ -13,80 +13,110 @@ function formatDate(date: Date): string {
 export async function initCronJobs() {
   console.log('🕒 Initializing Cron Jobs & Data Synchronization...');
 
-  // 1. Initial Database Seed Check
+  // ── 1. Initial Database Seed & Backfill Check ─────────────────────────────
   try {
     const regionCount = await db('pihps_regions').count('prov_id as count').first();
     const isRegionsEmpty = !regionCount || Number(regionCount.count) === 0;
 
     if (isRegionsEmpty) {
-      console.log('⚠️ PIHPS Regions table is empty. Starting auto-sync...');
+      console.log('⚠️ PIHPS Regions table empty. Auto-syncing regions...');
       await syncRegions();
     }
 
-    const priceMax = await db('pihps_prices').max('date as maxDate').first();
-    const isPricesEmpty = !priceMax || !priceMax.maxDate;
-
     const today = new Date();
-    let backfillStart = new Date();
-    backfillStart.setFullYear(today.getFullYear() - 5); // Default 5 years ago
-    
-    let needsBackfill = false;
+    const fiveYearsAgo = new Date();
+    fiveYearsAgo.setFullYear(today.getFullYear() - 5);
 
-    if (isPricesEmpty) {
-      console.log('⚠️ PIHPS Prices table is empty. Starting 5-Years MEGA BACKFILL...');
-      needsBackfill = true;
+    // Calculate expected date range in days (5 years backfill target)
+    const expectedDays = Math.floor((today.getTime() - fiveYearsAgo.getTime()) / (1000 * 60 * 60 * 24));
+
+    // Check actual coverage: how many distinct dates do we have?
+    const dateCountRow = await db('pihps_prices').countDistinct('date as count').first();
+    const actualDays = Number(dateCountRow?.count || 0);
+
+    // Coverage ratio — if we have less than 80% of expected dates, trigger backfill
+    const coverageRatio = actualDays / expectedDays;
+
+    if (actualDays === 0) {
+      console.log('⚠️ PIHPS Prices table is EMPTY. Starting 5-Year MEGA BACKFILL...');
+    } else if (coverageRatio < 0.8) {
+      console.log(`⚠️ PIHPS incomplete: ${actualDays} dates of ~${expectedDays} expected (${Math.round(coverageRatio * 100)}% coverage). Resuming backfill...`);
     } else {
-      const maxDbDate = new Date(String(priceMax.maxDate));
+      // Also check: is the latest data recent enough?
+      const priceMax = await db('pihps_prices').max('date as maxDate').first();
+      const maxDbDate = new Date(String(priceMax?.maxDate));
       const diffDays = Math.floor((today.getTime() - maxDbDate.getTime()) / (1000 * 60 * 60 * 24));
       
       if (diffDays > 14) {
-        console.log(`⚠️ PIHPS Database gap detected! Last data was ${diffDays} days ago. Resuming backfill...`);
-        backfillStart = maxDbDate;
-        needsBackfill = true;
+        console.log(`⚠️ PIHPS gap detected — last data was ${diffDays} days ago. Resuming incremental backfill from ${String(priceMax?.maxDate)}...`);
       } else {
-        console.log('✅ PIHPS Database is up-to-date. Skipping mega-backfill.');
+        console.log(`✅ PIHPS Database OK: ${actualDays} distinct dates, coverage ${Math.round(coverageRatio * 100)}%. Skipping backfill.`);
+        return; // Early exit — proceed to cron scheduling
       }
     }
 
-    if (needsBackfill) {
-      (async () => {
-        try {
-          const startYear = backfillStart.getFullYear();
-          const endYear = today.getFullYear();
+    // ── Trigger Backfill ───────────────────────────────────────────────────
+    // Determine the start point: either 5 years ago, or from last available date
+    let backfillStart = fiveYearsAgo;
+    if (actualDays > 0 && coverageRatio >= 0.8) {
+      // Partial resume: only fill forward from the last max date
+      const priceMax = await db('pihps_prices').max('date as maxDate').first();
+      if (priceMax?.maxDate) backfillStart = new Date(String(priceMax.maxDate));
+    }
 
-          for (let yr = startYear; yr <= endYear; yr++) {
-            let chunkStart = new Date(yr, 0, 1); // Jan 1st
+    (async () => {
+      try {
+        const startYear = backfillStart.getFullYear();
+        const endYear = today.getFullYear();
+        let totalChunks = 0;
+
+        for (let yr = startYear; yr <= endYear; yr++) {
+          // Split each year into quarters to reduce load per request
+          const quarters = [
+            { start: new Date(yr, 0, 1), end: new Date(yr, 2, 31) },
+            { start: new Date(yr, 3, 1), end: new Date(yr, 5, 30) },
+            { start: new Date(yr, 6, 1), end: new Date(yr, 8, 30) },
+            { start: new Date(yr, 9, 1), end: new Date(yr, 11, 31) },
+          ];
+
+          for (const q of quarters) {
+            let chunkStart = q.start;
+            let chunkEnd = q.end;
+
+            if (chunkEnd < backfillStart) continue; // Already covered
             if (chunkStart < backfillStart) chunkStart = backfillStart;
-
-            let chunkEnd = new Date(yr, 11, 31); // Dec 31st
             if (chunkEnd > today) chunkEnd = today;
+
+            if (chunkStart > chunkEnd) continue;
 
             const startStr = formatDate(chunkStart);
             const endStr = formatDate(chunkEnd);
-            
-            console.log(`[PIHPS] Backfilling chunk: ${startStr} to ${endStr}`);
-            await scrapeMatrixData({ startDate: startStr, endDate: endStr, priceType: 1 });
-            console.log(`[PIHPS] Completed chunk: ${startStr} to ${endStr}. Resting 10s...`);
-            await new Promise(r => setTimeout(r, 10000));
+
+            console.log(`[PIHPS Backfill] Chunk ${++totalChunks}: ${startStr} → ${endStr}`);
+            try {
+              await scrapeMatrixData({ startDate: startStr, endDate: endStr, priceType: 1 });
+              console.log(`[PIHPS Backfill] ✓ Done chunk ${totalChunks}. Resting 5s...`);
+            } catch (chunkErr) {
+              console.error(`[PIHPS Backfill] ✗ Error chunk ${totalChunks}:`, chunkErr);
+            }
+            await new Promise(r => setTimeout(r, 5000));
           }
-          console.log('🎉 PIHPS Historical Backfill Complete!');
-        } catch (err) {
-          console.error('❌ Error during MEGA BACKFILL:', err);
         }
-      })();
-    }
+        console.log(`🎉 PIHPS Historical Backfill Complete! (${totalChunks} chunks processed)`);
+      } catch (err) {
+        console.error('❌ PIHPS MEGA BACKFILL failed:', err);
+      }
+    })();
+
   } catch (err) {
     console.error('❌ Error during Initial Data Check:', err);
   }
 
-  // 2. Schedule Daily Incremental Scraper
-  // Runs every day at 06:00 AM (to fetch data reported yesterday/today)
+  // ── 2. Daily Incremental Scraper — 06:00 AM ────────────────────────────────
   cron.schedule('0 6 * * *', async () => {
     console.log('⏰ [Cron] Running Daily PIHPS Sync...');
-    // Sync regions just in case there are updates
     await syncRegions();
 
-    // Fetch the last 7 days of data to update missing / revised data from BI
     const endDate = new Date();
     const startDate = new Date();
     startDate.setDate(endDate.getDate() - 7);
@@ -95,11 +125,11 @@ export async function initCronJobs() {
       await scrapeMatrixData({
         startDate: formatDate(startDate),
         endDate: formatDate(endDate),
-        priceType: 1
+        priceType: 1,
       });
       console.log('✅ [Cron] Daily PIHPS Sync Completed!');
     } catch (err) {
-      console.error('❌ [Cron] Error during Daily PIHPS Sync:', err);
+      console.error('❌ [Cron] Daily PIHPS Sync Failed:', err);
     }
   });
 
