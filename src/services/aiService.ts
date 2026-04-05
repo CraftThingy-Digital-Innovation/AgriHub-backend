@@ -160,13 +160,13 @@ export async function chatWithAI(opts: {
             .limit(2);
         
         if (recentDocs.length > 0) {
-            ragContext = '\n\n=== DOKUMEN PENGETAHUAN TERBARU ===\n' +
+            ragContext += '\n\n=== DOKUMEN PENGETAHUAN TERBARU ===\n' +
                 recentDocs.map(d => `[Judul: ${d.title}]\nPreview: ${d.content_preview || 'Tidak ada preview.'}`).join('\n\n') +
                 '\n(Gunakan ini jika user bertanya tentang dokumen yang baru saja dikirim atau isi secara umum)\n';
             ragSources.push(...recentDocs.map(d => d.title));
         }
     } else if (chunks.length > 0) {
-      ragContext = '\n\n=== INFORMASI DARI DOKUMEN PENGETAHUAN (ARSIP) ===\n' +
+      ragContext += '\n\n=== INFORMASI DARI DOKUMEN PENGETAHUAN (ARSIP) ===\n' +
         chunks.map(c => `[SUMBER: ${c.docTitle}${c.originalFilename ? ` | FILE: ${c.originalFilename}` : ''}]\n${c.content}`).join('\n\n') +
         '\n=== AKHIR DOKUMEN ===\n';
       ragSources.push(...chunks.map(c => c.docTitle));
