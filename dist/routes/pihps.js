@@ -41,8 +41,20 @@ router.get('/map-data', async (req, res) => {
         let query = (0, knex_1.default)('pihps_prices').select('prov_name', 'commodity_name', 'price').avg('price as aggregate_price').groupBy('prov_name', 'commodity_name');
         if (date)
             query = query.where('date', date);
-        if (commodity)
-            query = query.where('commodity_name', 'like', `%${commodity}%`);
+        if (commodity) {
+            let commoditySearch = commodity;
+            const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(commoditySearch);
+            if (isUUID) {
+                const komoditasRow = await (0, knex_1.default)('komoditas').where('id', commoditySearch).first();
+                // If found, search PIHPS using the generic word (split the first word, e.g. "Bawang Merah Besar" -> "Bawang Merah" or just search the full name)
+                // PIHPS has e.g. 'Beras', 'Bawang Merah', 'Cabai Merah'.
+                if (komoditasRow) {
+                    const baseName = komoditasRow.nama.split(',')[0].replace(/kualitas.*/i, '').trim();
+                    commoditySearch = baseName;
+                }
+            }
+            query = query.where('commodity_name', 'like', `%${commoditySearch}%`);
+        }
         if (marketType)
             query = query.where('market_type', marketType);
         const data = await query;
