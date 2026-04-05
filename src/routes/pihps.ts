@@ -57,6 +57,16 @@ router.get('/commodities', async (req, res) => {
   }
 });
 
+// [GET] /api/pihps/latest-date
+router.get('/latest-date', async (req, res) => {
+  try {
+    const latestRow = await db('pihps_prices').max('date as maxDate').first();
+    res.json({ status: 'success', date: latestRow?.maxDate || new Date().toISOString().slice(0, 10) });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch latest date' });
+  }
+});
+
 // [GET] /api/pihps/map-data — Data harga per provinsi untuk peta
 router.get('/map-data', async (req, res) => {
   try {
