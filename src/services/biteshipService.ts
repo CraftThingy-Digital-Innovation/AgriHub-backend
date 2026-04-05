@@ -38,7 +38,7 @@ export async function checkOngkir(params: {
     courier: String(r.courier_name),
     service: String(r.courier_service_name),
     price: Number(r.price),
-    estimated_days: `${r.min_day || '?'}-${r.max_day || '?'}`,
+    estimated_days: r.shipment_duration_range ? String(r.shipment_duration_range) : (r.duration ? String(r.duration).replace(' days', '') : '?'),
     description: String(r.courier_service_name),
   })).sort((a: {price: number}, b: {price: number}) => a.price - b.price);
 }
