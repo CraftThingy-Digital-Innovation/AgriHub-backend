@@ -85,129 +85,97 @@ export async function getBPSStatistics(commodity: string): Promise<any> {
 }
 
 /**
- * Fungsi pembantu untuk AI: Mencari info harga dari BPS secara dinamis
+ * Fungsi pembantu untuk AI: Mencari info harga dari tabel pihps_prices (Data Bank Indonesia)
+ * Secara dinamis mengekstrak nama komoditas apa saja yang dibicarakan dari DB.
  */
 export async function searchCommodityPrices(query: string): Promise<string> {
-    const apiKey = process.env.BPS_API_KEY;
-    if (!apiKey) return "(Sistem: BPS_API_KEY belum dikonfigurasi)";
-
     const lowerQuery = query.toLowerCase();
 
-    // 1. Jika tanya NTP, arahkan ke indikator strategis
-    if (lowerQuery.includes('ntp') || lowerQuery.includes('nilai tukar petani')) {
-        return await getBPSStrategicIndicators();
-    }
-
-    // 2. Mapping keyword untuk pencarian BPS
-    const keywordMap: Record<string, string> = {
-        'cabe': 'cabai', 'lombok': 'cabai',
-        'brambang': 'bawang merah', 'bawang': 'bawang',
-        'beras': 'beras', 'telur': 'telur', 'daging': 'daging',
-        'minyak': 'minyak goreng', 'gula': 'gula pasir',
-        'padi': 'padi', 'jagung': 'jagung', 'kedelai': 'kedelai',
-        'pupuk': 'pupuk', 'gabah': 'gabah'
-    };
-
-    let searchKeyword = "";
-    for (const [key, val] of Object.entries(keywordMap)) {
-        if (lowerQuery.includes(key)) {
-            searchKeyword = val;
-            break;
-        }
-    }
-
-    // Deteksi Wilayah (contoh: Bengkulu)
-    let targetDomain = "0000"; // Default Nasional
-    const bengkuluKeywords = ['bengkulu', 'provinsi bengkulu'];
-    if (bengkuluKeywords.some(bk => lowerQuery.includes(bk))) {
-        targetDomain = "1700"; // ID Provinsi Bengkulu di BPS
-    }
-
-    if (!searchKeyword) return "";
-
     try {
-        console.log(`🔍 Searching BPS for: ${searchKeyword} in domain ${targetDomain}...`);
-        const searchRes = await axios.get(`${BPS_BASE_URL}/list/model/var/lang/ind/domain/${targetDomain}/key/${apiKey}`, {
-            params: { keyword: searchKeyword },
-            timeout: 5000
-        });
+        // 1. Ambil semua komoditas dari database untuk pencocokan dinamis
+        const rows = await db('pihps_prices').distinct('commodity_name');
+        const allCommodities: string[] = rows.map((r: any) => String(r.commodity_name).toLowerCase().trim());
 
-        if (searchRes.data.status !== 'OK' || !searchRes.data.data || !searchRes.data.data[1] || searchRes.data.data[1].length === 0) {
-            return `(Sistem: BPS tidak memiliki data statistik terbaru untuk "${searchKeyword}" di wilayah yang dipilih)`;
+        // 2. Filter komoditas mana yang disebut oleh user 
+        const matchedBaseWords = new Set<string>();
+        
+        for (const comm of allCommodities) {
+            // PIHPS punya varian seperti "Beras Kualitas Bawah I", "Cabai Merah Keriting"
+            // Kita ambil kata awalan (Beras, Cabai, Bawang, Daging, Gula, dll) sebagai penentu
+            const baseWord = comm.split(' ')[0];
+            
+            let isMatch = false;
+            if (lowerQuery.includes(baseWord)) isMatch = true;
+            // Handle street alias
+            else if (['cabe', 'lombok'].some(w => lowerQuery.includes(w)) && baseWord === 'cabai') isMatch = true;
+            else if (lowerQuery.includes('brambang') && baseWord === 'bawang') isMatch = true;
+            else if (['padi', 'gabah'].some(w => lowerQuery.includes(w)) && baseWord === 'beras') isMatch = true;
+
+            if (isMatch) matchedBaseWords.add(baseWord);
         }
 
-        // Ambil max 3 variabel yang paling relevan
-        const vars = searchRes.data.data[1]
-            .filter((v: any) => v.title.toLowerCase().includes('harga') || v.title.toLowerCase().includes(searchKeyword))
-            .slice(0, 3);
-
-        if (vars.length === 0) return "";
-
-        let groundingText = `=== DATA STATISTIK BPS: ${searchKeyword.toUpperCase()} (${targetDomain === "1700" ? "BENGKULU" : "NASIONAL"}) ===\n`;
-
-        for (const variable of vars) {
-            const varId = variable.var_id;
-            const varTitle = variable.title;
-            const unit = variable.unit || '';
-
-            // Coba ambil data tahun terbaru
-            const currentYear = new Date().getFullYear();
-            const years = [currentYear, currentYear - 1, currentYear - 2];
-            let foundVal = "";
-            let dataYear = "";
-
-            for (const th of years) {
-                try {
-                    const dataRes = await axios.get(`${BPS_BASE_URL}/list/model/data/lang/ind/domain/${targetDomain}/var/${varId}/key/${apiKey}/th/${th}`, {
-                        timeout: 3000
-                    });
-
-                    if (dataRes.data.status === 'OK' && dataRes.data.datacontent) {
-                        const content = dataRes.data.datacontent;
-                        const vervars = dataRes.data.vervar || [];
-                        
-                        // Cari ID untuk "INDONESIA" (9999) atau region spesifik
-                        let targetId = targetDomain === "0000" ? "9999" : targetDomain;
-                        
-                        // Fallback jika label tidak cocok
-                        const matchEntry = vervars.find((v: any) => 
-                            v.label.toUpperCase().includes('INDONESIA') || 
-                            v.label.toUpperCase().includes('BENGKULU')
-                        );
-                        if (matchEntry) targetId = matchEntry.val.toString();
-
-                        const targetPrefix = `${targetId}${varId}`;
-                        const matchingKey = Object.keys(content).find(k => k.startsWith(targetPrefix));
-                        
-                        if (matchingKey) {
-                            foundVal = content[matchingKey];
-                            dataYear = th.toString();
-                            break;
-                        } else {
-                            // Fallback: ambil value pertama
-                            const firstKey = Object.keys(content)[0];
-                            if (firstKey) {
-                                foundVal = content[firstKey];
-                                dataYear = th.toString();
-                                break;
-                            }
-                        }
-                    }
-                } catch { continue; }
-            }
-
-            if (foundVal) {
-                groundingText += `• ${varTitle}\n  Nilai: ${foundVal} ${unit} (Tahun ${dataYear})\n`;
-            } else {
-                groundingText += `• ${varTitle}\n  Status: Data tabel tersedia, namun belum terbit di API periode terbaru.\n`;
-            }
+        if (matchedBaseWords.size === 0) {
+            return ""; // Tidak ada komoditas di db yang relevan dengan pertanyaan
         }
 
-        groundingText += `\n(Gunakan data tahunan di atas sebagai referensi statistik resmi. Jika user bertanya harga hari ini, sampaikan bahwa ini adalah angka resmi terakhir dari API BPS).\n`;
-        return groundingText;
+        // 3. Ambil tanggal rilis data yang paling akhir
+        const latestRow = await db('pihps_prices').max('date as maxDate').first();
+        if (!latestRow || !latestRow.maxDate) {
+            return `(Sistem: Database PIHPS masih kosong, belum ada data tersinkronisasi.)`;
+        }
+
+        const date = latestRow.maxDate;
+
+        // 4. Tarik data harga untuk seluruh komoditas yang terdeteksi
+        const prices = await db('pihps_prices')
+            .where('date', date)
+            .where((builder) => {
+                Array.from(matchedBaseWords).forEach(k => builder.orWhere('commodity_name', 'ilike', `%${k}%`));
+            })
+            .select('prov_name', 'commodity_name', 'price')
+            .avg('price as aggregate_price')
+            .groupBy('prov_name', 'commodity_name', 'price')
+            .orderBy('prov_name');
+
+        if (prices.length === 0) return "";
+
+        // 5. Cek apakah user sedang menanyakan provinsi spesifik (Misal: Bengkulu)
+        // Kita bisa kembangkan deteksi seluruh 34 provinsi, namun saat ini dicontohkan Bengkulu
+        let isTargetingBengkulu = lowerQuery.includes('bengkulu');
+        let dataToFormat = prices;
+
+        if (isTargetingBengkulu) {
+            const bengkuluData = prices.filter(p => p.prov_name.toLowerCase() === 'bengkulu');
+            if (bengkuluData.length > 0) {
+                dataToFormat = bengkuluData;
+            }
+        } else {
+             // 6. Jika tidak sebut provinsi, hitung AGREGAT RATA-RATA NASIONAL (per komoditas)
+             const natAvg: Record<string, { sum: number, count: number }> = {};
+             prices.forEach(p => {
+                 if (!natAvg[p.commodity_name]) natAvg[p.commodity_name] = { sum: 0, count: 0 };
+                 natAvg[p.commodity_name].sum += Number(p.aggregate_price || p.price);
+                 natAvg[p.commodity_name].count++;
+             });
+             
+             let text = `=== DATA HARGA NASIONAL PIHPS (BANK INDONESIA) ===\nTanggal Update: ${date}\n\n`;
+             for (const [cName, stat] of Object.entries(natAvg)) {
+                 const avgPrice = Math.round(stat.sum / stat.count);
+                 text += `• ${cName}: Rp ${avgPrice.toLocaleString('id-ID')}/Kg (Rata-rata Nasional)\n`;
+             }
+             text += `\n(Data ini merupakan rata-rata harga di seluruh provinsi bersumber dari PIHPS Nasional)`;
+             return text;
+        }
+
+        // Output format jika ada provinsi spesifik
+        let text = `=== DATA HARGA PIHPS DARI BANK INDONESIA (PROVINSI BENGKULU) ===\nTanggal Update: ${date}\n\n`;
+        for (const p of dataToFormat) {
+            text += `• ${p.commodity_name}: Rp ${Number(p.aggregate_price || p.price).toLocaleString('id-ID')}/Kg\n`;
+        }
+        return text;
 
     } catch (error) {
-        console.error('❌ BPS Search Error:', (error as Error).message);
-        return `(Sistem: Gangguan koneksi ke BPS API saat mencari data "${searchKeyword}")`;
+        console.error('❌ PIHPS DB Search Error:', (error as Error).message);
+        return `(Sistem: Gangguan koneksi database saat mencari data harga)`;
     }
 }

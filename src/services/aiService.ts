@@ -191,7 +191,7 @@ export async function chatWithAI(opts: {
 
   const systemMsg = SYSTEM_PROMPT + 
     (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
-    (priceContext ? `\n\n=== DATA TERBARU DARI API BPS (UTAMAKAN INI) ===\n${priceContext}\n` : '') +
+    (priceContext ? `\n\n=== DATA TERBARU DARI PIHPS NASIONAL (BANK INDONESIA) ===\n${priceContext}\n` : '') +
     creditContext +
     ragContext;
 
