@@ -47,19 +47,20 @@ async function scrapeMatrixData(config) {
             const regIds = regs.map(r => r.reg_id).join(',');
             if (!regIds)
                 continue;
-            // Payload sesuai dengan network capture
+            // Convert DD-MM-YYYY to YYYY-MM-DD for the URL payload
+            const sDay = startDate.split('-')[0], sMo = startDate.split('-')[1], sYr = startDate.split('-')[2];
+            const eDay = endDate.split('-')[0], eMo = endDate.split('-')[1], eYr = endDate.split('-')[2];
             const payload = new URLSearchParams();
-            payload.append('priceType', priceType.toString());
-            payload.append('prov_id', prov.prov_id.toString());
-            payload.append('reg_id', regIds);
-            payload.append('start_date', startDate);
-            payload.append('end_date', endDate);
+            payload.append('price_type_id', priceType.toString());
+            payload.append('province_id', prov.prov_id.toString());
+            payload.append('regency_id', regIds);
+            payload.append('start_date', `${sYr}-${sMo}-${sDay}`);
+            payload.append('end_date', `${eYr}-${eMo}-${eDay}`);
             payload.append('comcat_id', ''); // Ambil semua komoditas
-            payload.append('reportType', '1');
-            console.log(`[PIHPS] Fetching data for Province ${prov.prov_name} (Regencies: ${regIds})`);
-            const response = await axios_1.default.post(`${BASE_URL}/TabelHarga/GetGridDataDaerah`, payload.toString(), {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-            });
+            payload.append('market_id', ''); // Ambil semua pasar
+            payload.append('tipe_laporan', '1');
+            console.log(`[PIHPS] Fetching data for Province ${prov.prov_name} (Regencies: ${regIds}) | Dates: ${sYr}-${sMo}-${sDay}`);
+            const response = await axios_1.default.get(`${BASE_URL}/TabelHarga/GetGridDataDaerah?${payload.toString()}`);
             const dataGrid = response.data?.data || [];
             await processGridToDatabase(dataGrid, prov.prov_name, priceType);
             // Jeda 2 detik untuk menghindari rate limit / IP Ban
@@ -84,12 +85,17 @@ async function processGridToDatabase(dataGrid, provName, marketType) {
             continue;
         // Loop semua key di object row untuk mencari tanggal
         for (const key of Object.keys(row)) {
-            // Regex check misal key adalah "12/04/2026" atau "12-04-2026"
-            if (/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/.test(key)) {
-                const dateStr = key.replace(/\//g, '-'); // Normalisasikan jadi DD-MM-YYYY
-                // SQLite date is usually YYYY-MM-DD, parse it:
-                const [dd, mm, yyyy] = dateStr.split('-');
-                const isoDate = `${yyyy}-${mm}-${dd}`;
+            // Regex check misal key adalah "12/04/2026" atau "2026-04-12"
+            if (/^\d{2}[\/\-]\d{2}[\/\-]\d{4}$/.test(key) || /^\d{4}[\/\-]\d{2}[\/\-]\d{2}$/.test(key)) {
+                const dateStr = key.replace(/\//g, '-'); // Normalisasikan
+                let isoDate = '';
+                if (/^\d{4}/.test(dateStr)) {
+                    isoDate = dateStr; // Sudah YYYY-MM-DD
+                }
+                else {
+                    const [dd, mm, yyyy] = dateStr.split('-');
+                    isoDate = `${yyyy}-${mm}-${dd}`;
+                }
                 let rawPrice = row[key];
                 if (typeof rawPrice === 'string')
                     rawPrice = rawPrice.replace(/[^\d]/g, ''); // Hapus format titik/koma
