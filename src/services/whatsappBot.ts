@@ -672,13 +672,14 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   }
 
   // ── RESOLUSI IDENTITY (Link Phone & LID) ───────────────────────────────
-  let user: any = null;
   const isLid = sender.endsWith('@lid');
   const participantJid = msg.key.participant || ''; // "628xxx@s.whatsapp.net" or "xxx@lid"
 
-  if (isLid) {
-    user = await db('users').where({ whatsapp_lid: sender }).first();
-  } else {
+  // Coba cari pakai whatsapp_lid dulu (bisa berisi @lid ATAU @s.whatsapp.net dari command LINK)
+  let user: any = await db('users').where({ whatsapp_lid: sender }).first();
+
+  if (!user && !isLid) {
+    // Fallback pakai phone
     const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
     user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
 
@@ -688,6 +689,11 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
       await db('users').where({ id: user.id }).update({ whatsapp_lid: participantLid });
       console.log(`🔗 Linked LID ${participantLid} to user ${user.phone}`);
     }
+  }
+
+  // Jika masih tidak ketemu, dan sender adalah Private Chat, kita juga coba cek whatsapp_lid = participantJid
+  if (!user && participantJid && participantJid !== sender) {
+       user = await db('users').where({ whatsapp_lid: participantJid }).first();
   }
 
   try {
@@ -1389,16 +1395,26 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
       // Process Agentic Tools
       const finalReply = await processAgenticTools(jid, sender, aiReply.reply);
 
-      // Finalisasi Pesan: Jika Socket terhubung, kita hapus pesan loading lama dan kirim pesan akhir.
-      // Jika diskonek, sendWAMessage HANYA AKAN TERTUNDA, namun PASTI TERKIRIM saat online kembali!
-      try {
-          if (initialMsg?.key && waSocket && isConnected) {
-              await waSocket.sendMessage(jid, { delete: initialMsg.key }).catch(()=>{});
-          }
-      } catch (e) {}
+      // Finalisasi Pesan: Prioritas Utama adalah MENGEDIT pesan agar tidak menumpuk.
+      // sendWAMessage punya fitur buffer up to ~35 detik jika inet putus.
+      let sentMessage = undefined;
 
-      // MENGGUNAKAN sendWAMessage KARENA METHOD INI PUNYA FITUR BUFFER SAAT DISCONNECT (15 dtik wait loop!)
-      const sentMessage = await sendWAMessage(jid, `🌱 ${finalReply}`);
+      if (initialMsg?.key) {
+         try {
+             sentMessage = await sendWAMessage(jid, `🌱 ${finalReply}`, { edit: initialMsg.key });
+         } catch (e) {}
+      }
+
+      // Jika edit tetap gagal (mungkin karena pesan sudah terlalu lama atau server WA menolak), 
+      // fallback ke hapus dan kirim baru (hanya jika WA socket terhubung agar tidak error delete).
+      if (!sentMessage) {
+          try {
+             if (initialMsg?.key && waSocket && isConnected) {
+                 await waSocket.sendMessage(jid, { delete: initialMsg.key }).catch(()=>{});
+             }
+          } catch(e) {}
+          sentMessage = await sendWAMessage(jid, `🌱 ${finalReply}`);
+      }
 
       // Jika masih gagal (miss > 15s network outage), bot akan pass error.
       if (sentMessage) {
