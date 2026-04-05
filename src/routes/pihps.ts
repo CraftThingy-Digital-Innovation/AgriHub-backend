@@ -7,7 +7,6 @@ const router = express.Router();
 // [POST] /api/pihps/sync-regions (Admin only)
 router.post('/sync-regions', async (req, res) => {
   try {
-    // Start background sync
     syncRegions();
     res.json({ message: 'Sync regions job started in background' });
   } catch (error) {
@@ -20,8 +19,6 @@ router.post('/backfill', async (req, res) => {
   try {
     const { startDate, endDate, priceType } = req.body;
     if (!startDate || !endDate) return res.status(400).json({ error: 'startDate and endDate required (DD-MM-YYYY)' });
-
-    // Start background scraper
     scrapeMatrixData({ startDate, endDate, priceType: priceType || 1 });
     res.json({ message: `Backfill matrix job started in background for ${startDate} to ${endDate}` });
   } catch (error) {
@@ -29,37 +26,65 @@ router.post('/backfill', async (req, res) => {
   }
 });
 
-// [GET] /api/pihps/map-data (Public / Map Chart)
-// Returns regional price data aggregated for mapping
+// [GET] /api/pihps/commodities — Daftar komoditas unik dari pihps_prices
+// Digunakan untuk mengisi dropdown filter di halaman Monitor Harga
+router.get('/commodities', async (req, res) => {
+  try {
+    const rows = await db('pihps_prices')
+      .distinct('commodity_name')
+      .orderBy('commodity_name');
+
+    const allNames: string[] = rows.map((r: any) => String(r.commodity_name).trim());
+
+    // Deduplikasi: ambil "nama induk" saja.
+    // Contoh: "Beras", "Beras Kualitas Bawah I", "Beras Kualitas Medium I" → cukup "Beras"
+    // Logika: jika nama A adalah prefix dari nama B (A lebih pendek), maka B adalah sub-varian dari A.
+    const baseNames = [...new Set(
+      allNames.map(name => {
+        const base = allNames.find(candidate =>
+          candidate !== name &&
+          candidate.length < name.length &&
+          name.toLowerCase().startsWith(candidate.toLowerCase())
+        );
+        return base || name;
+      })
+    )].sort();
+
+    res.json({ status: 'success', data: baseNames });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to fetch commodities' });
+  }
+});
+
+// [GET] /api/pihps/map-data — Data harga per provinsi untuk peta
 router.get('/map-data', async (req, res) => {
   try {
     const { date, commodity, marketType } = req.query;
-    // Default to the most recent date available if not specified
-    let query = db('pihps_prices').select('prov_name', 'commodity_name', 'price').avg('price as aggregate_price').groupBy('prov_name', 'commodity_name');
 
+    let query = db('pihps_prices')
+      .select('prov_name', 'commodity_name', 'price')
+      .avg('price as aggregate_price')
+      .groupBy('prov_name', 'commodity_name');
+
+    // Default ke tanggal terbaru jika tidak ada yang disebutkan
     if (date) {
-       query = query.where('date', date as string);
+      query = query.where('date', date as string);
     } else {
-       const latestRow = await db('pihps_prices').max('date as maxDate').first();
-       if (latestRow && latestRow.maxDate) {
-           query = query.where('date', latestRow.maxDate);
-       }
-    }
-    if (commodity) {
-      let commoditySearch = commodity as string;
-      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(commoditySearch);
-      if (isUUID) {
-         const komoditasRow = await db('komoditas').where('id', commoditySearch).first();
-         // If found, search PIHPS using the generic word (split the first word, e.g. "Bawang Merah Besar" -> "Bawang Merah" or just search the full name)
-         // PIHPS has e.g. 'Beras', 'Bawang Merah', 'Cabai Merah'.
-         if (komoditasRow) {
-             const baseName = komoditasRow.nama.split(',')[0].replace(/kualitas.*/i, '').trim(); 
-             commoditySearch = baseName;
-         }
+      const latestRow = await db('pihps_prices').max('date as maxDate').first();
+      if (latestRow && latestRow.maxDate) {
+        query = query.where('date', latestRow.maxDate);
       }
-      query = query.where('commodity_name', 'like', `%${commoditySearch}%`);
     }
-    if (marketType) query = query.where('market_type', marketType);
+
+    // commodity = plain text nama komoditas (mis: "Beras", "Bawang Merah")
+    if (commodity) {
+      query = query.where('commodity_name', 'like', `%${commodity}%`);
+    }
+
+    if (marketType) {
+      query = query.where('market_type', marketType);
+    }
 
     const data = await query;
     res.json({ status: 'success', data });
