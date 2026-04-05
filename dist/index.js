@@ -29,6 +29,7 @@ const wallet_1 = __importDefault(require("./routes/wallet"));
 const shipping_1 = __importDefault(require("./routes/shipping"));
 const matching_1 = __importDefault(require("./routes/matching"));
 const price_1 = __importDefault(require("./routes/price"));
+const addresses_1 = __importDefault(require("./routes/addresses"));
 const admin_1 = __importDefault(require("./routes/admin"));
 const pihps_1 = __importDefault(require("./routes/pihps"));
 const whatsappBot_1 = require("./services/whatsappBot");
@@ -77,6 +78,7 @@ app.use('/api/wallet', wallet_1.default);
 app.use('/api/shipping', shipping_1.default);
 app.use('/api/matching', matching_1.default);
 app.use('/api/price', price_1.default);
+app.use('/api/users/addresses', addresses_1.default);
 app.use('/api/admin', admin_1.default);
 app.use('/api/pihps', pihps_1.default);
 // ── WhatsApp Bot Status ──────────────────────────────────────────────────

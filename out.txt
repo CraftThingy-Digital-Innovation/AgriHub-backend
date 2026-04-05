@@ -1,0 +1,12 @@
+Working directory changed to [35mD:\ProgramFilesX\laragon\www\AgriHub\apps\backend\src\config[39m
+Error: No configuration file found and no commandline connection parameters passed
+    at checkConfigurationOptions (D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\knex\bin\utils\cli-config-utils.js:109:11)
+    at initKnex (D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\knex\bin\cli.js:70:5)
+    at Command.<anonymous> (D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\knex\bin\cli.js:267:32)
+    at Command.listener [as _actionHandler] (D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\commander\lib\command.js:482:17)
+    at D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\commander\lib\command.js:1283:65
+    at Command._chainOrCall (D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\commander\lib\command.js:1177:12)
+    at Command._parseCommand (D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\commander\lib\command.js:1283:27)
+    at D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\commander\lib\command.js:1081:27
+    at Command._chainOrCall (D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\commander\lib\command.js:1177:12)
+    at Command._dispatchSubcommand (D:\ProgramFilesX\laragon\www\AgriHub\apps\backend\node_modules\commander\lib\command.js:1077:23)

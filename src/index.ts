@@ -26,6 +26,7 @@ import walletRouter from './routes/wallet';
 import shippingRouter from './routes/shipping';
 import matchingRouter from './routes/matching';
 import priceRouter from './routes/price';
+import addressRoutes from './routes/addresses';
 import adminRouter from './routes/admin';
 import pihpsRouter from './routes/pihps';
 import { connectWhatsApp, getWAStatus } from './services/whatsappBot';
@@ -79,6 +80,7 @@ app.use('/api/wallet', walletRouter);
 app.use('/api/shipping', shippingRouter);
 app.use('/api/matching', matchingRouter);
 app.use('/api/price', priceRouter);
+app.use('/api/users/addresses', addressRoutes);
 app.use('/api/admin', adminRouter);
 app.use('/api/pihps', pihpsRouter);
 
