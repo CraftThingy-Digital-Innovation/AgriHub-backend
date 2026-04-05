@@ -180,17 +180,22 @@ async function chatWithAI(opts) {
         { role: 'user', content: message },
     ];
     try {
-        // Bypass untuk admin: Gunakan SYSTEM_PUTER_TOKEN jika user token tidak ada
-        if ((!activeToken || activeToken === '') && user?.role === 'admin') {
-            activeToken = process.env.SYSTEM_PUTER_TOKEN;
-            if (activeToken)
-                console.log(`🛡️ [AI] Admin bypass used for user ${userId}`);
-        }
+        // CATATAN: Sandbox Practice – JANGAN pernah gunakan SYSTEM_PUTER_TOKEN sebagai bypass.
+        // Setiap pengguna wajib menggunakan token Puter milik mereka sendiri.
         if (!activeToken) {
             if (userId === 'wa-bot') {
-                return { reply: '❌ Fitur AI dimatikan karena sistem menggunakan Bring Your Own Token. Harap login dan hubungkan akun Puter di web.', ragSources: [] };
+                // Fallback jika targetUserId tidak berhasil diresolvasi ke user nyata
+                return { reply: '❌ Sesi tidak dikenali. Silakan ketik *LINK [Nomor HP]* untuk menautkan akun AgriHub Anda.', ragSources: [] };
             }
-            return { reply: '❌ Anda belum menghubungkan akun Puter untuk fitur AI. Silakan hubungkan di Pengaturan Chat.', ragSources: [] };
+            // User terdaftar tapi belum hubungkan Puter – beri pesan terarah
+            return {
+                reply: `🔌 Halo! Akun AgriHub Anda sudah terdaftar, namun fitur AI memerlukan koneksi ke *Puter.com*.
+
+Silakan hubungkan akun Puter Anda di:\n👉 https://agrihub.rumah-genbi.com/app?action=connect-puter
+
+Setelah terhubung, Anda bisa langsung chat dengan AsistenTani! 🌱`,
+                ragSources: []
+            };
         }
         const response = await callPuterAI({ messages, model, apiKey: activeToken, onChunk });
         return { reply: response.reply, ragSources, tokensUsed: response.tokensUsed };

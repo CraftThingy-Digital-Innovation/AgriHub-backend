@@ -44,6 +44,7 @@ const baileys_1 = __importStar(require("baileys"));
 const pino_1 = __importDefault(require("pino"));
 const qrcode_terminal_1 = __importDefault(require("qrcode-terminal"));
 const knex_1 = __importDefault(require("../config/knex"));
+const axios_1 = __importDefault(require("axios"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const aiService_1 = require("./aiService");
 const biteshipService_1 = require("./biteshipService");
@@ -1173,31 +1174,75 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
             targetUserId = owner.id;
         }
         else {
-            // Private Chat
-            if (!user) {
-                // Jika sampai sini user masih null, berarti memang belum terdaftar atau LID belum di-link
-                // Coba ekstrak HP sekali lagi dari sumber yang paling mungkin
-                const phoneSource = (sender.endsWith('@lid') && !jid.endsWith('@g.us')) ? jid : sender;
-                const decodedPhone = phoneSource.split('@')[0].replace(/[^0-9]/g, '');
-                const phoneParam = decodedPhone ? `&phone=${decodedPhone}` : '';
-                let exists = null;
-                if (decodedPhone.length > 5) {
-                    exists = await (0, knex_1.default)('users').where('phone', 'like', `%${decodedPhone.slice(-9)}%`).first();
+            // ── Private Chat: Smart Identity Resolution ─────────────────────────
+            // Nomor bot dari waSocket untuk redirect link kembali ke WA setelah setup
+            const botPhone = waSocket?.user?.id?.split(':')[0] || '';
+            // _botWaUrl reserved for use in frontend magic link after setup: https://wa.me/{botPhone}
+            // Nomor HP dari JID/LID (lebih prioritas dari jid daripada sender pada private chat)
+            const detectedPhone = (() => {
+                const src = (sender.endsWith('@lid') && !jid.endsWith('@g.us')) ? jid : sender;
+                return src.split('@')[0].replace(/[^0-9]/g, '');
+            })();
+            console.log(`🔍 [WA Private] sender=${sender} | jid=${jid} | phone=${detectedPhone} | user_found=${!!user} | has_token=${!!user?.puter_token} | uid=${user?.id || 'null'}`);
+            // Helper: buat magic session & kembalikan URL
+            const createMagicLink = async (purpose, userId) => {
+                try {
+                    const sessionRes = await axios_1.default.post(`http://localhost:${process.env.PORT || 3000}/api/auth/wa-magic-session`, { phone: detectedPhone || null, lid: sender, jid, user_id: userId || null, purpose });
+                    return `https://agrihub.rumah-genbi.com/wa-setup?session=${sessionRes.data.sessionId}&bot=${botPhone}`;
                 }
-                if (exists) {
-                    await sendWAMessage(jid, `👋 *Halo ${exists.name}! Sepertinya Anda sudah terdaftar, namun identitas WhatsApp ini belum tertaut.*\n\nSilakan klik link di bawah untuk otomatis menautkan akun:\n👉 https://agrihub.rumah-genbi.com/login?mode=login${phoneParam}&action=link&lid=${sender}`);
+                catch (e) {
+                    console.error('[WA] Gagal buat magic session:', e);
+                    return null;
+                }
+            };
+            if (!user) {
+                // Cari via nomor HP untuk detect broken LID
+                let foundByPhone = null;
+                if (detectedPhone.length > 5) {
+                    foundByPhone = await (0, knex_1.default)('users').where('phone', 'like', `%${detectedPhone.slice(-9)}%`).first();
+                }
+                if (foundByPhone) {
+                    // ── Skenario D: User ada, LID rotated/broken ──
+                    const magicUrl = await createMagicLink('relink', foundByPhone.id);
+                    await sendWAMessage(jid, `👋 *Halo ${foundByPhone.name}!*\n\n` +
+                        `Akun AgriHub Anda sudah terdaftar ✅, namun identitas WhatsApp yang terdeteksi berbeda dari data lama kami.\n\n` +
+                        `🔄 Klik tautan berikut untuk *memperbarui & menghubungkan ulang* secara otomatis:\n` +
+                        `👉 ${magicUrl || `https://agrihub.rumah-genbi.com/login?action=link&lid=${encodeURIComponent(sender)}&phone=${detectedPhone}`}\n\n` +
+                        `_Tautan berlaku sampai proses selesai._`);
+                }
+                else if (detectedPhone) {
+                    // ── Skenario C: Sama sekali belum terdaftar (tapi punya nomor HP) ──
+                    const magicUrl = await createMagicLink('full-setup');
+                    await sendWAMessage(jid, `👋 *Halo! Selamat datang di AgriHub!* 🌾\n\n` +
+                        `Anda belum memiliki akun. Klik tautan berikut untuk *daftar & langsung aktif* dalam hitungan detik:\n\n` +
+                        `👉 ${magicUrl || `https://agrihub.rumah-genbi.com/login?mode=register&phone=${detectedPhone}&action=link&lid=${encodeURIComponent(sender)}`}\n\n` +
+                        `✨ Cukup hubungkan akun *Puter.com* — sistem akan otomatis membuat akun AgriHub dan menautkan WhatsApp ini!\n\n` +
+                        `_Tautan berlaku sampai proses selesai._`);
                 }
                 else {
-                    // Jika tidak ada deteksi HP sama sekali (Full LIDs tanpa JID murni) atau memang tidak ada di DB
-                    if (!decodedPhone) {
-                        await sendWAMessage(jid, `👋 *Halo! Sepertinya akun WhatsApp Anda belum tertaut dengan AgriHub.*\n\nJika Anda sudah mendaftar di Web, Anda bisa menautkan akun dengan membalas pesan ini menggunakan format:\n*LINK [Nomor HP Anda]*\nContoh: *LINK 085123456789*\n\nJika belum mendaftar, silakan daftar di sini:\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
-                    }
-                    else {
-                        await sendWAMessage(jid, `👋 *Halo! Sepertinya Anda belum terdaftar di AgriHub.*\n\nSilakan daftar di link berikut (ID WhatsApp akan tertaut otomatis):\n👉 https://agrihub.rumah-genbi.com/login?mode=register${phoneParam}&action=link&lid=${sender}`);
-                    }
+                    // ── Fallback: LID murni tanpa nomor HP ──
+                    await sendWAMessage(jid, `👋 *Halo!* Sepertinya Anda belum terdaftar di AgriHub.\n\n` +
+                        `Tautkan akun dengan membalas:\n*LINK [Nomor HP Anda]*\nContoh: *LINK 085123456789*\n\n` +
+                        `Belum daftar?\n👉 https://agrihub.rumah-genbi.com/login?mode=register&action=link&lid=${encodeURIComponent(sender)}`);
                 }
                 return;
             }
+            // User ditemukan — auto-update LID jika berubah (silent)
+            if (user.whatsapp_lid !== sender && sender.endsWith('@lid')) {
+                await (0, knex_1.default)('users').where({ id: user.id }).update({ whatsapp_lid: sender, updated_at: new Date().toISOString() });
+                console.log(`🔗 [WA] Auto-updated LID for ${user.id}: ${user.whatsapp_lid} → ${sender}`);
+                user.whatsapp_lid = sender;
+            }
+            // ── Skenario B: User ada tapi belum hubungkan Puter ──
+            if (!user.puter_token) {
+                const magicUrl = await createMagicLink('connect-puter', user.id);
+                await sendWAMessage(jid, `🔌 *Halo ${user.name}!* Akun AgriHub Anda sudah terhubung ✅\n\n` +
+                    `Untuk menggunakan fitur *AI AsistenTani*, hubungkan akun *Puter.com* Anda:\n\n` +
+                    `👉 ${magicUrl || `https://agrihub.rumah-genbi.com/app?action=connect-puter`}\n\n` +
+                    `_Tautan berlaku sampai proses selesai. Setelah terhubung, langsung chat di sini! 🌱_`);
+                return;
+            }
+            // ── Skenario A: Semua siap, lanjut ke AI ──
             targetUserId = user.id;
         }
         // 1. Simpan pesan user ke DB
