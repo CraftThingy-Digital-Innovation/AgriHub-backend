@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendEmail = sendEmail;
 exports.sendVerificationEmail = sendVerificationEmail;
+exports.sendOTPEmail = sendOTPEmail;
 const nodemailer_1 = __importDefault(require("nodemailer"));
 const knex_1 = __importDefault(require("../config/knex"));
 // ─── Load settings from DB ──────────────────────────────────────────────────
@@ -93,5 +94,29 @@ async function sendVerificationEmail(to, token, name) {
     </div>
   `;
     return sendEmail(to, `Verifikasi Email ${appName} Anda`, html);
+}
+async function sendOTPEmail(to, otp, name) {
+    const appName = (await getSetting('app_name')) || 'AgriHub';
+    const html = `
+    <div style="font-family:sans-serif;max-width:520px;margin:auto;background:#f0fdf4;border-radius:16px;overflow:hidden;">
+      <div style="background:#16a34a;padding:32px;text-align:center;">
+        <h1 style="color:#fff;margin:0;font-size:28px;">🌾 ${appName}</h1>
+        <p style="color:#bbf7d0;margin:8px 0 0;">Kode Verifikasi Email</p>
+      </div>
+      <div style="padding:32px;">
+        <p style="font-size:16px;color:#166534;">Halo <strong>${name}</strong>,</p>
+        <p style="color:#374151;">Berikut adalah kode verifikasi 6-digit untuk email Anda di ${appName}:</p>
+        <div style="text-align:center;margin:32px 0;">
+          <div style="display:inline-block;background:#f0fdf4;border:2px dashed #16a34a;color:#166534;font-size:36px;font-weight:bold;letter-spacing:8px;padding:16px 32px;border-radius:12px;">
+            ${otp}
+          </div>
+        </div>
+        <p style="color:#6b7280;font-size:13px;text-align:center;">Kode ini berlaku selama <strong>15 menit</strong>. Jangan berikan kode ini kepada siapapun.</p>
+        <hr style="border:none;border-top:1px solid #d1fae5;margin:24px 0;" />
+        <p style="color:#9ca3af;font-size:12px;text-align:center;">© ${new Date().getFullYear()} ${appName}</p>
+      </div>
+    </div>
+  `;
+    return sendEmail(to, `${otp} adalah kode verifikasi ${appName} Anda`, html);
 }
 //# sourceMappingURL=emailService.js.map

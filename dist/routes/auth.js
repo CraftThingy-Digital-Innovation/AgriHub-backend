@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -20,7 +53,7 @@ const otpExpiry = () => new Date(Date.now() + 10 * 60 * 1000).toISOString();
 function safeUser(user) {
     if (!user)
         return null;
-    const { password_hash, email_verify_token, phone_otp, email_verify_expires, phone_otp_expires, ...safe } = user;
+    const { password_hash, email_verify_token, email_verify_expires, phone_otp, phone_otp_expires, email_otp, email_otp_expires, whatsapp_link_token, whatsapp_link_expires, ...safe } = user;
     return safe;
 }
 function validatePassword(password) {
@@ -165,26 +198,65 @@ router.post('/login', async (req, res) => {
 // ─── POST /api/auth/login-puter ───────────────────────────────────────────────
 router.post('/login-puter', async (req, res) => {
     try {
-        const { puter_token, puter_user_id, puter_name, puter_email, puter_username } = req.body;
+        const { puter_token, puter_user_id, puter_name, puter_email, puter_username, avatar_url } = req.body;
         if (!puter_token || !puter_user_id) {
             res.status(400).json({ success: false, error: 'puter_token dan puter_user_id wajib' });
             return;
         }
         const now = new Date().toISOString();
+        // 1. Cari by puter_user_id atau by email (sebagai fallback link)
         let user = await (0, knex_1.default)('users').where({ puter_user_id }).first();
         if (!user && puter_email) {
+            // Pastikan email puter tidak menabrak email user lain yang sudah ada
             user = await (0, knex_1.default)('users').whereRaw('LOWER(email) = ?', [puter_email.toLowerCase()]).first();
         }
         if (user) {
-            await (0, knex_1.default)('users').where({ id: user.id }).update({ puter_token, puter_user_id, updated_at: now });
+            // 🚀 AUTO-SYNC & AUTO-MERGE LOGIC
+            // Jika user yang ditemukan ternyata adalah akun "GHOST" (hp placeholder) 
+            // TAPI ada akun asli (hp beneran) dengan email yang sama, kita harus bersihkan ghost tersebut.
+            if (user.phone.startsWith('PUTER_') && puter_email) {
+                const realUser = await (0, knex_1.default)('users')
+                    .whereRaw('LOWER(email) = ?', [puter_email.toLowerCase()])
+                    .whereNot('phone', 'like', 'PUTER_%')
+                    .first();
+                if (realUser && realUser.id !== user.id) {
+                    console.log(`🧹 [login-puter] Merging ghost ${user.id} into real user ${realUser.id}`);
+                    // Pindahkan puter_id ke realUser jika belum ada
+                    await (0, knex_1.default)('users').where({ id: realUser.id }).update({
+                        puter_user_id: puter_user_id,
+                        puter_token: puter_token,
+                        updated_at: now
+                    });
+                    // Hapus ghost
+                    await (0, knex_1.default)('users').where({ id: user.id }).delete();
+                    user = realUser;
+                }
+            }
+            // Sync data profil terbaru dari Puter
+            const updates = { puter_token, puter_user_id, updated_at: now };
+            if (puter_name)
+                updates.name = puter_name;
+            if (avatar_url)
+                updates.avatar_url = avatar_url;
+            if (puter_email)
+                updates.puter_email = puter_email.toLowerCase();
+            await (0, knex_1.default)('users').where({ id: user.id }).update(updates);
             const fresh = await (0, knex_1.default)('users').where({ id: user.id }).first();
-            res.json({ success: true, data: { user: safeUser(fresh), token: signToken(user.id), needs_phone: !user.phone || !user.phone_verified, needs_password: !user.password_hash } });
+            res.json({
+                success: true,
+                data: {
+                    user: safeUser(fresh),
+                    token: signToken(user.id),
+                    needs_phone: !user.phone || user.phone.startsWith('PUTER_'),
+                    needs_email_verify: !user.email_verified && !!user.email,
+                    needs_password: !user.password_hash
+                }
+            });
         }
         else {
-            // Akun baru via Puter — perlu phone + password setelah ini
+            // Akun baru via Puter
             const tempUsername = puter_username?.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 30) || null;
             const id = (0, uuid_1.v4)();
-            // MySQL schema mengharuskan phone NOT NULL — gunakan placeholder unik hingga user isi sendiri
             const tempPhone = `PUTER_${id.slice(0, 8)}`;
             await (0, knex_1.default)('users').insert({
                 id,
@@ -192,7 +264,9 @@ router.post('/login-puter', async (req, res) => {
                 name: puter_name || puter_username || 'Pengguna Puter',
                 username: tempUsername,
                 email: puter_email?.toLowerCase() || null,
-                email_verified: !!puter_email,
+                puter_email: puter_email?.toLowerCase() || null,
+                email_verified: !!puter_email, // Puter email is usually verified by Puter
+                avatar_url: avatar_url || null,
                 puter_user_id,
                 puter_token,
                 role: 'konsumen',
@@ -205,7 +279,16 @@ router.post('/login-puter', async (req, res) => {
                 total_earned: 0, total_withdrawn: 0, created_at: now, updated_at: now,
             });
             const newUser = await (0, knex_1.default)('users').where({ id }).first();
-            res.status(201).json({ success: true, data: { user: safeUser(newUser), token: signToken(id), needs_phone: true, needs_password: true, is_new: true } });
+            res.status(201).json({
+                success: true,
+                data: {
+                    user: safeUser(newUser),
+                    token: signToken(id),
+                    needs_phone: true,
+                    needs_password: true,
+                    is_new: true
+                }
+            });
         }
     }
     catch (err) {
@@ -314,7 +397,61 @@ router.post('/verify-phone-otp', auth_1.requireAuth, async (req, res) => {
         res.status(500).json({ success: false, error: 'Gagal verifikasi OTP' });
     }
 });
-// ─── GET /api/auth/verify-email ───────────────────────────────────────────────
+// ─── Email OTP System (New) ──────────────────────────────────────────────────
+router.post('/send-email-otp', auth_1.requireAuth, async (req, res) => {
+    try {
+        const user = await (0, knex_1.default)('users').where({ id: req.user.id }).first();
+        if (!user?.email) {
+            res.status(400).json({ success: false, error: 'Email belum terdaftar' });
+            return;
+        }
+        if (user.email_verified) {
+            res.json({ success: true, message: 'Email sudah terverifikasi' });
+            return;
+        }
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        await (0, knex_1.default)('users').where({ id: user.id }).update({ email_otp: otp, email_otp_expires: expires });
+        const { sendOTPEmail } = await Promise.resolve().then(() => __importStar(require('../services/emailService')));
+        await sendOTPEmail(user.email, otp, user.name);
+        res.json({ success: true, message: `Kode verifikasi dikirim ke ${user.email}` });
+    }
+    catch (err) {
+        console.error('[send-email-otp]', err);
+        res.status(500).json({ success: false, error: 'Gagal kirim email' });
+    }
+});
+router.post('/verify-email-otp', auth_1.requireAuth, async (req, res) => {
+    try {
+        const { otp } = req.body;
+        const user = await (0, knex_1.default)('users').where({ id: req.user.id }).first();
+        if (!user?.email_otp) {
+            res.status(400).json({ success: false, error: 'Tidak ada kode aktif' });
+            return;
+        }
+        if (new Date(user.email_otp_expires) < new Date()) {
+            res.status(400).json({ success: false, error: 'Kode kadaluarsa' });
+            return;
+        }
+        if (user.email_otp !== otp?.toString()) {
+            res.status(400).json({ success: false, error: 'Kode salah' });
+            return;
+        }
+        await (0, knex_1.default)('users').where({ id: user.id }).update({
+            email_verified: true,
+            email_otp: null,
+            email_otp_expires: null,
+            updated_at: new Date().toISOString()
+        });
+        const fresh = await (0, knex_1.default)('users').where({ id: user.id }).first();
+        res.json({ success: true, message: 'Email berhasil diverifikasi!', data: { user: safeUser(fresh) } });
+    }
+    catch (err) {
+        console.error('[verify-email-otp]', err);
+        res.status(500).json({ success: false, error: 'Gagal verifikasi email' });
+    }
+});
+// GET verify-email (Legacy Link Support)
 router.get('/verify-email', async (req, res) => {
     try {
         const { token } = req.query;
@@ -327,41 +464,11 @@ router.get('/verify-email', async (req, res) => {
             res.redirect('/login?error=invalid_token');
             return;
         }
-        if (user.email_verified) {
-            res.redirect('/app?email_verified=already');
-            return;
-        }
-        if (new Date(user.email_verify_expires) < new Date()) {
-            res.redirect('/login?error=token_expired');
-            return;
-        }
         await (0, knex_1.default)('users').where({ id: user.id }).update({ email_verified: true, email_verify_token: null, email_verify_expires: null, updated_at: new Date().toISOString() });
         res.redirect('/app?email_verified=1');
     }
     catch {
         res.redirect('/login?error=server_error');
-    }
-});
-// ─── POST /api/auth/resend-verify-email ──────────────────────────────────────
-router.post('/resend-verify-email', auth_1.requireAuth, async (req, res) => {
-    try {
-        const user = await (0, knex_1.default)('users').where({ id: req.user.id }).first();
-        if (!user?.email) {
-            res.status(400).json({ success: false, error: 'Tidak ada email terdaftar' });
-            return;
-        }
-        if (user.email_verified) {
-            res.json({ success: true, message: 'Email sudah terverifikasi' });
-            return;
-        }
-        const token = (0, uuid_1.v4)();
-        const expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
-        await (0, knex_1.default)('users').where({ id: user.id }).update({ email_verify_token: token, email_verify_expires: expires });
-        await (0, emailService_1.sendVerificationEmail)(user.email, token, user.name);
-        res.json({ success: true, message: 'Email verifikasi dikirim ulang' });
-    }
-    catch {
-        res.status(500).json({ success: false, error: 'Gagal kirim email' });
     }
 });
 // ─── GET /api/auth/check-username/:username ───────────────────────────────────
@@ -431,6 +538,53 @@ router.get('/check-phone/:phone', async (req, res) => {
     }
 });
 // ─── WA Magic Sessions ────────────────────────────────────────────────────────
+router.post('/request-whatsapp-link', auth_1.requireAuth, async (req, res) => {
+    try {
+        const token = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        await (0, knex_1.default)('users').where({ id: req.user.id }).update({
+            whatsapp_link_token: token,
+            whatsapp_link_expires: expires
+        });
+        res.json({ success: true, token });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Gagal generate token' });
+    }
+});
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { token, password } = req.body;
+        if (!token || !password) {
+            res.status(400).json({ success: false, error: 'Token dan password wajib' });
+            return;
+        }
+        // Enforce Tight Password Control
+        const pwErr = validatePassword(password);
+        if (pwErr) {
+            res.status(400).json({ success: false, error: pwErr });
+            return;
+        }
+        const user = await (0, knex_1.default)('users')
+            .where({ phone_otp: token })
+            .where('phone_otp_expires', '>', new Date().toISOString())
+            .first();
+        if (!user) {
+            res.status(400).json({ success: false, error: 'Token tidak valid' });
+            return;
+        }
+        await (0, knex_1.default)('users').where({ id: user.id }).update({
+            password_hash: await bcryptjs_1.default.hash(password, 10),
+            phone_otp: null,
+            phone_otp_expires: null,
+            updated_at: new Date().toISOString()
+        });
+        res.json({ success: true, message: 'Password berhasil diubah' });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Gagal reset password' });
+    }
+});
 router.post('/wa-magic-session', async (req, res) => {
     try {
         const { phone, lid, jid, user_id, purpose } = req.body;

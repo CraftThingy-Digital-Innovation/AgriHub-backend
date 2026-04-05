@@ -785,8 +785,33 @@ async function handleMessage(msg) {
     }
     try {
         // ── Command Parser (Panggil dengan cleanUpper agar @Bot MENU tetap terbaca MENU) ──
-        const isCommand = ['DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP', 'LINK ', 'LAPOR STOK', 'CARI STOK', 'LIHAT MATCH', 'CEK TOKEN', 'CEK SALDO', 'KREDIT', 'BELI ', 'PILIH KURIR ', 'KIRIM ', 'TERIMA ', 'BATAL '].some(c => cleanUpper.startsWith(c));
+        const isCommand = ['VERIFIKASI ', 'DAFTAR TOKO', 'JUAL ', 'ONGKIR ', 'STOK', 'PESANAN', 'MENU', 'HELP', 'LINK ', 'LAPOR STOK', 'CARI STOK', 'LIHAT MATCH', 'CEK TOKEN', 'CEK SALDO', 'KREDIT', 'BELI ', 'PILIH KURIR ', 'KIRIM ', 'TERIMA ', 'BATAL '].some(c => cleanUpper.startsWith(c));
         if (isCommand) {
+            if (cleanUpper.startsWith('VERIFIKASI ')) {
+                const token = cleanUpper.slice(11).trim().toUpperCase();
+                if (token.length !== 6) {
+                    await sendWAMessage(jid, '❌ Format salah. Contoh: *VERIFIKASI ABCDEF*');
+                    return;
+                }
+                const linkUser = await (0, knex_1.default)('users')
+                    .where({ whatsapp_link_token: token })
+                    .where('whatsapp_link_expires', '>', new Date().toISOString())
+                    .first();
+                if (!linkUser) {
+                    await sendWAMessage(jid, '❌ Token verifikasi tidak valid atau sudah kadaluarsa. Silakan minta token baru di dashboard AgriHub.');
+                    return;
+                }
+                // Update user: Link WhatsApp ID, Mark Phone Verified, Clear Token
+                await (0, knex_1.default)('users').where({ id: linkUser.id }).update({
+                    whatsapp_lid: sender,
+                    phone_verified: true,
+                    whatsapp_link_token: null,
+                    whatsapp_link_expires: null,
+                    updated_at: new Date().toISOString()
+                });
+                await sendWAMessage(jid, `✅ *Berhasil!* WhatsApp Anda telah ditautkan ke akun AgriHub atas nama *${linkUser.name}*.\n\nSekarang Anda bisa menerima notifikasi transaksi dan menggunakan fitur AI secara personal! 🌾🤖`);
+                return;
+            }
             if (cleanUpper.startsWith('LINK ')) {
                 const inputPhone = cleanText.slice(5).trim().replace(/[^0-9]/g, '');
                 if (inputPhone.length < 9) {
