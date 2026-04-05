@@ -70,8 +70,7 @@ router.post('/create', requireAuth, async (req: AuthRequest, res: Response): Pro
 
     // Simpan payment token ke order
     await db('orders').where({ id: order_id }).update({
-      payment_token: transaction.token,
-      payment_url: transaction.redirect_url,
+      midtrans_token: transaction.token,
       status: 'menunggu_bayar',
       updated_at: new Date().toISOString(),
     });

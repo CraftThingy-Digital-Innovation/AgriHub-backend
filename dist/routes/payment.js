@@ -75,8 +75,7 @@ router.post('/create', auth_1.requireAuth, async (req, res) => {
         const transaction = await snap.createTransaction(transactionDetails);
         // Simpan payment token ke order
         await (0, knex_1.default)('orders').where({ id: order_id }).update({
-            payment_token: transaction.token,
-            payment_url: transaction.redirect_url,
+            midtrans_token: transaction.token,
             status: 'menunggu_bayar',
             updated_at: new Date().toISOString(),
         });
