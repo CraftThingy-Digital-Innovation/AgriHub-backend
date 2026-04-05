@@ -563,6 +563,15 @@ export async function sendWAMessage(jid: string, text: string, options?: any): P
   }
 
   if (!waSocket || !isConnected) {
+    // Memperpanjang batas waktu reconnect dari 15s menjadi 35 detik karena proses reconnect baileys kadang butuh 25dtik
+    let waitCount = 0;
+    while (!isConnected && isConnecting && waitCount < 70) {
+      await new Promise(r => setTimeout(r, 500));
+      waitCount++;
+    }
+  }
+
+  if (!waSocket || !isConnected) {
     console.error(`❌ [WA] Failed to send message to ${jid}: Bot NOT CONNECTED after wait.`);
     return undefined;
   }
@@ -1220,40 +1229,35 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
     });
 
     if (isMentioned || !isGroup) {
-      // Kirim pesan inisial yang akan diedit nanti
-      const initialMsg = await sendWAMessage(jid, '⏳ _AsistenTani sedang berpikir..._');
+      // Kirim pesan inisial
+      let initialMsg: any = null;
+      try {
+          // Menampilkan status "sedang mengetik..." di WhatsApp
+          await waSocket?.sendPresenceUpdate('composing', jid);
+          initialMsg = await sendWAMessage(jid, '⏳ _AsistenTani sedang memproses pertanyaan Anda..._');
+      } catch (e) {}
 
       let currentBuffer = '';
-      let editTimer: any = null;
-      let phaseText = 'AsistenTani sedang berpikir...';
+      let phaseText = 'Memproses...';
       let waitTime = 0;
 
-      const doEdit = async (forced = false, customDisplay?: string) => {
-          if (!initialMsg?.key || !waSocket) return;
+      // Timer Polling Anti-Hang & Presence Maintainer
+      const pollingTimer = setInterval(async () => {
+          if (!isConnected) return; // Jangan kirim update jika diskonek
           
-          let display = customDisplay || currentBuffer;
-          if (display.trim() === '') return;
-          
-          // Sembunyikan tag EXEC dari pandangan saat typing
-          const execOpen = display.lastIndexOf('[EXEC:');
-          if (execOpen !== -1 && display.indexOf(']', execOpen) === -1) {
-              display = display.substring(0, execOpen) + '\n⏳ _(Memproses pesanan internal...)_';
-          }
-
-          try { 
-              await waSocket.sendMessage(jid, { text: display + (forced ? '' : ' ✍️'), edit: initialMsg.key }); 
-          } catch (e) {} // Abaikan konflik edit debounced
-      };
-
-      // Timer Polling Anti-Hang
-      const pollingTimer = setInterval(() => {
-          // Jika stream sudah berjalan, hentikan polling teks statis
           if (currentBuffer.length > 0) {
-              clearInterval(pollingTimer);
+              // Jika token AI sudah mulai masuk, kita teruskan presence typing
+              await waSocket?.sendPresenceUpdate('composing', jid).catch(()=>{});
               return;
           }
           waitTime += 5;
-          doEdit(true, `⏳ _${phaseText} (${waitTime}s)_`);
+          
+          // Edit pesan awal HANYA saat fase berat (seperti cari BPS) agar user tahu bot tidak mati
+          if (initialMsg?.key && waitTime % 10 === 0) {
+             try {
+                 await waSocket?.sendMessage(jid, { text: `⏳ _${phaseText} (${waitTime}s)_`, edit: initialMsg.key });
+             } catch(e) {}
+          }
       }, 5000);
 
       const targetDocumentMsg = msg.message?.documentMessage ? msg : (msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.documentMessage ? { key: msg.key, message: msg.message?.extendedTextMessage?.contextInfo?.quotedMessage } : null);
@@ -1365,52 +1369,57 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
         whatsappJid: jid,
         useRag: true,
         imageUrl,
-        onPhaseChange: (phase: string) => {
+        onPhaseChange: async (phase: string) => {
             phaseText = phase;
-            if (currentBuffer.length === 0) doEdit(true, `⏳ _${phaseText} (${waitTime}s)_`);
+            // Langsung update status fase ke pesan inisial jika koneksi aman
+            if (isConnected && currentBuffer.length === 0 && initialMsg?.key && waSocket) {
+                 try { await waSocket.sendMessage(jid, { text: `⏳ _${phaseText}..._`, edit: initialMsg.key }); } catch(e){}
+            }
         },
         onChunk: (chunk: string) => {
-            if (pollingTimer) clearInterval(pollingTimer); // Pastikan mati
+            // Kita matikan edit streaming WhatsApp per kata karena sangat lambat dan membebani server
+            // Sebagai gantinya, token ditampung di memori, sementara status WA "Sedang Mengetik" aktif terus
             currentBuffer += chunk;
-            if (!editTimer) {
-                editTimer = setTimeout(() => {
-                    doEdit(false);
-                    editTimer = null;
-                }, 1800); // 1.8s interval aman anti rate-limit WA
-            }
         }
       });
 
-      if (editTimer) clearTimeout(editTimer);
       if (pollingTimer) clearInterval(pollingTimer);
+      try { await waSocket?.sendPresenceUpdate('paused', jid); } catch(e) {} // Hentikan typing
 
-      // Process Agentic Tools (Mengeksekusi logika db dan mengambil konfirmasi akhir)
+      // Process Agentic Tools
       const finalReply = await processAgenticTools(jid, sender, aiReply.reply);
 
-      // Final Edit replacing the buffer with the clean processed reply
-      if (initialMsg?.key && waSocket) {
-          try {
-              await waSocket.sendMessage(jid, { text: `🌱 ${finalReply}`, edit: initialMsg.key });
-          } catch(e) {}
-      } else {
-          // Fallback if edit fails
-          await sendWAMessage(jid, `🌱 ${finalReply}`);
-      }
+      // Finalisasi Pesan: Jika Socket terhubung, kita hapus pesan loading lama dan kirim pesan akhir.
+      // Jika diskonek, sendWAMessage HANYA AKAN TERTUNDA, namun PASTI TERKIRIM saat online kembali!
+      try {
+          if (initialMsg?.key && waSocket && isConnected) {
+              await waSocket.sendMessage(jid, { delete: initialMsg.key }).catch(()=>{});
+          }
+      } catch (e) {}
 
-      // 2. Simpan balasan AI ke DB
-      await db('chats').insert({
-        id: uuidv4(),
-        user_id: user ? user.id : 'wa-bot',
-        whatsapp_jid: jid,
-        role: 'assistant',
-        content: finalReply,
-        created_at: new Date().toISOString()
-      });
+      // MENGGUNAKAN sendWAMessage KARENA METHOD INI PUNYA FITUR BUFFER SAAT DISCONNECT (15 dtik wait loop!)
+      const sentMessage = await sendWAMessage(jid, `🌱 ${finalReply}`);
+
+      // Jika masih gagal (miss > 15s network outage), bot akan pass error.
+      if (sentMessage) {
+        // 2. Simpan balasan AI ke DB HANYA JIKA TERKIRIM
+        await db('chats').insert({
+          id: uuidv4(),
+          user_id: user ? user.id : 'wa-bot',
+          whatsapp_jid: jid,
+          role: 'assistant',
+          content: finalReply,
+          created_at: new Date().toISOString()
+        });
+      } else {
+        console.warn(`[WA BUFER DROP] Sistem mencoba buffer, namun WA terdiskonek terlalu lama. Pesan tidak terkirim ke ${jid}`);
+      }
     }
 
   } catch (err) {
     console.error(`❌ [WA] Critical error in handleMessage:`, err);
-    await sendWAMessage(jid, `❌ Maaf, terjadi kesalahan sistem saat memproses pesan Anda.`);
+    // Tambahkan buffer check di handler error juga
+    await sendWAMessage(jid, `❌ Maaf, terjadi putus koneksi saat memproses pesan Anda, silakan coba lagi.`);
   }
 }
 
