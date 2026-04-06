@@ -1642,6 +1642,16 @@ async function processAgenticTools(jid: string, sender: string, aiReply: string)
                     processedReply = processedReply.replace(match[0], replyText);
                     break;
                 }
+                case 'CEK_TOKEN': {
+                    if (!user) throw new Error('Akun belum terdaftar.');
+                    if (user.puter_token) {
+                        const balance = await checkPuterBalance(user.puter_token);
+                        processedReply = processedReply.replace(match[0], `\n\n👤 *Status AI Anda:*\n\nAkun Puter: *Tertaut* ✅\nSisa Kredit: *${Number(balance).toFixed(2)} units*\n\n_Sistem memproses perintah AI otomatis._`);
+                    } else {
+                        processedReply = processedReply.replace(match[0], `\n\n👤 *Status AI Anda:*\n\nAkun Puter: *Belum Tertaut* ❌\nSilakan hubungkan akun Puter Anda di Dashboard.`);
+                    }
+                    break;
+                }
                 case 'CARI_PRODUK': {
                     const [komoditas, hargaMaxRaw] = params;
                     const limitHarga = hargaMaxRaw ? Number(hargaMaxRaw.replace(/[^0-9]/g, '')) : 9999999;
