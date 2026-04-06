@@ -767,13 +767,21 @@ async function handleMessage(msg) {
         if (phoneStr.length > 6) {
             user = await (0, knex_1.default)('users').where('phone', 'like', `%${phoneStr.slice(-9)}%`).first();
             // Jika ketemu user di DB via pencocokan string nomor HP, otomatis TAUTKAN!
-            if (user && isLid && user.whatsapp_lid !== sender) {
-                await (0, knex_1.default)('users').where({ id: user.id }).update({ whatsapp_lid: sender });
-                console.log(`🔗 Auto-Linked LID ${sender} to user ${user.phone}`);
+            if (user && user.whatsapp_lid !== sender) {
+                // Hanya update jika belum ada LID atau LID berubah (misal dari @s.whatsapp.net ke @lid)
+                await (0, knex_1.default)('users').where({ id: user.id }).update({
+                    whatsapp_lid: sender,
+                    phone_verified: true, // Auto-verify phone since they are chatting from it
+                    updated_at: new Date().toISOString()
+                });
+                console.log(`🔗 Auto-Linked identity ${sender} to user ${user.phone} (${user.name})`);
             }
-            const participantLid = participantJid.endsWith('@lid') ? participantJid : null;
+            const participantLid = participantJid && participantJid.endsWith('@lid') ? participantJid : null;
             if (user && participantLid && user.whatsapp_lid !== participantLid) {
-                await (0, knex_1.default)('users').where({ id: user.id }).update({ whatsapp_lid: participantLid });
+                await (0, knex_1.default)('users').where({ id: user.id }).update({
+                    whatsapp_lid: participantLid,
+                    updated_at: new Date().toISOString()
+                });
                 console.log(`🔗 Linked Participant LID ${participantLid} to user ${user.phone}`);
             }
         }
