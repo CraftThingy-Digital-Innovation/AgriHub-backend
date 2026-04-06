@@ -474,6 +474,19 @@ router.patch('/profile', requireAuth, async (req: AuthRequest, res: Response): P
     
     if (name) updates.name = name;
     if (avatar_url) updates.avatar_url = avatar_url;
+    
+    // Admin bypass: allow direct phone/email update
+    if (req.user!.role === 'admin') {
+      if (req.body.phone) {
+        updates.phone = req.body.phone.replace(/[^0-9]/g, '');
+        updates.phone_verified = true;
+      }
+      if (req.body.email) {
+        updates.email = req.body.email.toLowerCase();
+        updates.email_verified = true;
+      }
+    }
+
     if (username) {
       if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) { res.status(400).json({ success: false, error: 'Format username tidak valid' }); return; }
       const exists = await db('users').whereRaw('LOWER(username) = ?', [username.toLowerCase()]).whereNot({ id: req.user!.id }).first();
