@@ -397,6 +397,12 @@ export async function connectWhatsApp(): Promise<void> {
 
         await sendWAMessage(update.id, '🌾 *Halo semuanya! Saya AsistenTani AgriHub.*\n\nSaya siap membantu di grup ini! Tag saya atau ketik *MENU* untuk melihat perintah yang tersedia. Selamat bertani! 🚜🌿');
       }
+
+      // Jika bot DIBERHENTIKAN / KELUAR dari grup (action: 'remove')
+      if (update.action === 'remove' && update.participants.some((p: any) => p.id?.startsWith(botId) || (botLid && p.id?.startsWith(botLid)))) {
+          console.log(`🗑️ Bot dilepas dari grup: ${update.id}. Membersihkan database...`);
+          await db('group_credits').where({ group_jid: update.id }).delete();
+      }
     });
 
     waSocket.ev.on('messages.upsert', async ({ messages, type }) => {
@@ -742,6 +748,9 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   // ── DETEKSI MENTION YANG KUAT (Phone ID & LID) ─────────────────────────
   const botFullId = waSocket?.user?.id || '';
   const botId = botFullId.split('@')[0].split(':')[0] || '';
+  
+  let user: any = null;
+  let targetUserId: string = '';
   const botLidFull = (waSocket?.user as any)?.lid || '';
   const botLid = botLidFull.split('@')[0].split(':')[0] || '';
 
@@ -787,7 +796,7 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
   const participantJid = msg.key.participant || '';
 
   // Coba cari pakai whatsapp_lid yang terikat saat ini
-  let user: any = await db('users').where({ whatsapp_lid: sender }).first();
+  user = await db('users').where({ whatsapp_lid: sender }).first();
 
   // Jika tidak ketemu via LID, coba cari paksa pakai nomor HP
   if (!user) {
@@ -894,8 +903,8 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
         const [, name, kabupaten, provinsi, product_types] = parts;
         const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
 
-        const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
-        if (!user) {
+        const userInDb = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+        if (!userInDb) {
           await sendWAMessage(jid, `❌ Nomor ${phone} belum terdaftar di AgriHub.\n\nDaftar di: https://agrihub.rumah-genbi.com/daftar`);
           return;
         }
@@ -927,8 +936,8 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
         const harga = parts[parts.length - 2];
         const nama = parts.slice(0, -2).join(' ');
         const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-        const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
-        const store = user ? await db('stores').where({ owner_id: user.id }).first() : null;
+        const userInDb = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+        const store = userInDb ? await db('stores').where({ owner_id: userInDb.id }).first() : null;
 
         if (!store) {
           await sendWAMessage(jid, '❌ Toko tidak ditemukan. Daftar dulu!'); return;
@@ -958,8 +967,8 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
 
       if (cleanUpper === 'STOK') {
         const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-        const user = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
-        const store = user ? await db('stores').where({ owner_id: user.id }).first() : null;
+        const userInDb = await db('users').where('phone', 'like', `%${phone.slice(-9)}%`).first();
+        const store = userInDb ? await db('stores').where({ owner_id: userInDb.id }).first() : null;
         if (!store) { await sendWAMessage(jid, '❌ Toko tidak ditemukan.'); return; }
         const products = await db('products').where({ store_id: store.id, is_active: true });
         const stokText = products.map(p => `• ${p.name}: ${p.stock_quantity}`).join('\n');
@@ -968,18 +977,18 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
       }
 
       if (cleanUpper === 'PESANAN') {
-        const user = await db('users').where({ whatsapp_lid: sender }).first() || await db('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
-        if (!user) { await sendWAMessage(jid, '❌ Akun tidak ditemukan.'); return; }
+        const currentUser = await db('users').where({ whatsapp_lid: sender }).first() || await db('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+        if (!currentUser) { await sendWAMessage(jid, '❌ Akun tidak ditemukan.'); return; }
 
         const buying = await db('orders')
           .join('products', 'orders.product_id', 'products.id')
-          .where('orders.buyer_id', user.id)
+          .where('orders.buyer_id', currentUser.id)
           .select('orders.id', 'products.name as komoditas', 'orders.status', 'orders.total_amount')
           .orderBy('orders.created_at', 'desc').limit(5);
 
         const selling = await db('orders')
           .join('products', 'orders.product_id', 'products.id')
-          .where('orders.seller_id', user.id)
+          .where('orders.seller_id', currentUser.id)
           .select('orders.id', 'products.name as komoditas', 'orders.status', 'orders.total_amount')
           .orderBy('orders.created_at', 'desc').limit(5);
 
@@ -1026,6 +1035,23 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
       if (cleanUpper.startsWith('CARI STOK')) {
         await sendWAMessage(jid, 'ℹ️ Fitur permintaan barang kini ditingkatkan menjadi **Wishlist** pintar yang terhubung langsung dengan Alamat Pengiriman Anda secara otomatis.\n\nSilakan kunjungi *Menu Wishlist* di Dashboard Web AgriHub (https://agrihub.rumah-genbi.com) untuk menambahkan produk yang Anda butuhkan. Kami akan otomatis memberi tahu Anda di WA ketika ada stok yang cocok dan murah! 🥳');
         return;
+      }
+
+      if (cleanUpper === 'KELUAR' || cleanUpper === 'BYE') {
+          if (!isGroup) return; // Hanya berlaku di grup
+          const groupInfo = await db('group_credits').where({ group_jid: jid }).first();
+          
+          const isOwner = groupInfo && user && groupInfo.owner_id === user.id;
+          const isAdmin = user && user.role === 'admin';
+
+          if (isOwner || isAdmin) {
+              await sendWAMessage(jid, '👋 *Pamit dulu ya!* Terima kasih sudah mengizinkan saya membantu di grup ini. Sampai jumpa di lain waktu! 🌱🌾');
+              await db('group_credits').where({ group_jid: jid }).delete();
+              if (waSocket) await waSocket.groupLeave(jid);
+          } else {
+              await sendWAMessage(jid, '⚠️ *Maaf:* Hanya Admin AgriHub atau orang yang mengundang saya yang boleh menyuruh saya keluar dari grup ini.');
+          }
+          return;
       }
 
       if (cleanUpper === 'LIHAT MATCH') {
@@ -1100,12 +1126,12 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
           }
         } else {
           const phone = sender.split('@')[0].replace(/[^0-9]/g, '');
-          const user = await db('users')
+          const currentUser = await db('users')
             .where({ whatsapp_lid: sender })
             .orWhere('phone', 'like', `%${phone.slice(-9)}%`)
             .first();
-          if (user?.puter_token) {
-            const balance = await checkPuterBalance(user.puter_token);
+          if (currentUser?.puter_token) {
+            const balance = await checkPuterBalance(currentUser.puter_token);
             await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Tertaut* ✅\nMode: Personal (PC)\n${balance !== null ? `Sisa Kredit: *${Number(balance).toFixed(2)} units*` : 'Kredit: Terhubung'}\n\nAnda menggunakan kuota token dari akun Puter pribadi Anda yang telah dihubungkan di dashboard.`);
           } else {
             await sendWAMessage(jid, `👤 *Status AI Anda:*\n\nAkun Puter: *Belum Tertaut* ❌\n\nSilakan login ke AgriHub Web dan hubungkan akun Puter Anda di menu *Pengaturan Chat* agar bisa menggunakan AI di Private Chat.`);
@@ -1193,7 +1219,7 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
     }
 
     // AI Logic for Private Chat or Mentioned Group
-    let targetUserId = 'wa-bot';
+    targetUserId = 'wa-bot';
     if (isGroup) {
       const groupMeta = await db('group_credits').where({ group_jid: jid }).first();
       if (!groupMeta || !groupMeta.owner_id) {
@@ -1685,6 +1711,16 @@ async function processAgenticTools(jid: string, sender: string, aiReply: string)
                         processedReply = processedReply.replace(match[0], `\n\n🛒 *Hasil Pencarian Produk AgriHub:*\n\n${list}\n\n👉 _Ingin pesan? Ketik:* [Pesan ID_Produk Jumlah] (Contoh: Pesan ${results[0].id.split('-')[0]} 10)_`);
                     }
                     break;
+                }
+                case 'KELUAR': {
+                     if (!jid.endsWith('@g.us')) break; // Hanya di grup
+                     const groupInfo = await db('group_credits').where({ group_jid: jid }).first();
+                     if (groupInfo && (groupInfo.owner_id === user?.id || user?.role === 'admin')) {
+                         await sendWAMessage(jid, '👋 *Perintah AI:* Saya diperintahkan untuk undur diri. Selamat tinggal semuanya! 🌱');
+                         await db('group_credits').where({ group_jid: jid }).delete();
+                         if (waSocket) await waSocket.groupLeave(jid);
+                     }
+                     break;
                 }
                 case 'CEK_PENGIRIMAN': {
                     // Cek opsi kurir
