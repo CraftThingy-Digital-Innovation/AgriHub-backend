@@ -1310,11 +1310,18 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
       const botPhone = waSocket?.user?.id?.split(':')[0] || '';
       // _botWaUrl reserved for use in frontend magic link after setup: https://wa.me/{botPhone}
       // Nomor HP dari JID/LID (lebih prioritas dari jid daripada sender pada private chat)
-      const detectedPhone = (() => {
+      const isPotentialPhone = (s: string) => {
+        const digits = s.replace(/[^0-9]/g, '');
+        return digits.length >= 7 && digits.length <= 13;
+      };
+
+      const rawDetected = (() => {
         const src = (sender.endsWith('@lid') && !jid.endsWith('@g.us')) ? jid : sender;
         return src.split('@')[0].replace(/[^0-9]/g, '');
       })();
-      console.log(`🔍 [WA Private] sender=${sender} | jid=${jid} | phone=${detectedPhone} | user_found=${!!user} | has_token=${!!user?.puter_token} | uid=${user?.id || 'null'}`);
+      
+      const detectedPhone = isPotentialPhone(rawDetected) ? rawDetected : null;
+      console.log(`🔍 [WA Private] sender=${sender} | jid=${jid} | raw=${rawDetected} | detected=${detectedPhone} | uid=${user?.id || 'null'}`);
 
       // Helper: buat magic session & kembalikan URL — langsung via DB (tidak via HTTP)
       const createMagicLink = async (purpose: string, userId?: string): Promise<string | null> => {
@@ -1331,7 +1338,8 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
             status: 'pending',
             created_at: new Date().toISOString(),
           });
-          return `https://agrihub.rumah-genbi.com/wa-setup?session=${sessionId}&bot=${botPhone}`;
+          const phoneParam = (detectedPhone && isPotentialPhone(detectedPhone)) ? `&phone=${detectedPhone}` : '';
+          return `https://agrihub.rumah-genbi.com/wa-setup?session=${sessionId}&bot=${botPhone}${phoneParam}`;
         } catch (e) {
           console.error('[WA] Gagal buat magic session via DB:', e);
           return null;
@@ -1341,7 +1349,7 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
       if (!user) {
         // Cari via nomor HP untuk detect broken LID
         let foundByPhone: any = null;
-        if (detectedPhone.length > 5) {
+        if (detectedPhone && detectedPhone.length > 5) {
           foundByPhone = await db('users').where('phone', 'like', `%${detectedPhone.slice(-9)}%`).first();
         }
 
@@ -1352,7 +1360,7 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
             `👋 *Halo ${foundByPhone.name}!*\n\n` +
             `Akun AgriHub Anda sudah terdaftar ✅, namun identitas WhatsApp yang terdeteksi berbeda dari data lama kami.\n\n` +
             `🔄 Klik tautan berikut untuk *memperbarui & menghubungkan ulang* secara otomatis:\n` +
-            `👉 ${magicUrl || `https://agrihub.rumah-genbi.com/login?action=link&lid=${encodeURIComponent(sender)}&phone=${detectedPhone}`}\n\n` +
+            `👉 ${magicUrl}\n\n` +
             `_Tautan berlaku sampai proses selesai._`
           );
         } else if (detectedPhone) {
@@ -1361,7 +1369,7 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
           await sendWAMessage(jid,
             `👋 *Halo! Selamat datang di AgriHub!* 🌾\n\n` +
             `Anda belum memiliki akun. Klik tautan berikut untuk *daftar & langsung aktif* dalam hitungan detik:\n\n` +
-            `👉 ${magicUrl || `https://agrihub.rumah-genbi.com/login?mode=register&phone=${detectedPhone}&action=link&lid=${encodeURIComponent(sender)}`}\n\n` +
+            `👉 ${magicUrl}\n\n` +
             `✨ Cukup hubungkan akun *Puter.com* — sistem akan otomatis membuat akun AgriHub dan menautkan WhatsApp ini!\n\n` +
             `_Tautan berlaku sampai proses selesai._`
           );
@@ -1389,7 +1397,7 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
         await sendWAMessage(jid,
           `🔌 *Halo ${user.name}!* Akun AgriHub Anda sudah terhubung ✅\n\n` +
           `Untuk menggunakan fitur *AI AsistenTani*, hubungkan akun *Puter.com* Anda:\n\n` +
-          `👉 ${magicUrl || `https://agrihub.rumah-genbi.com/app?action=connect-puter`}\n\n` +
+          `👉 ${magicUrl}\n\n` +
           `_Tautan berlaku sampai proses selesai. Setelah terhubung, langsung chat di sini! 🌱_`
         );
         return;

@@ -203,6 +203,7 @@ router.post('/login', async (req, res) => {
         res.status(500).json({ success: false, error: 'Gagal login' });
     }
 });
+const isGhostUser = (user) => user && user.phone && user.phone.startsWith('PUTER_');
 // ─── POST /api/auth/login-puter ───────────────────────────────────────────────
 router.post('/login-puter', async (req, res) => {
     try {
@@ -211,53 +212,76 @@ router.post('/login-puter', async (req, res) => {
             res.status(400).json({ success: false, error: 'puter_token dan puter_user_id wajib' });
             return;
         }
+        // Check if the request is an authenticated LINKING request
+        let currentUser = null;
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.split(' ')[1];
+            try {
+                const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET());
+                currentUser = await (0, knex_1.default)('users').where({ id: decoded.id }).first();
+            }
+            catch (err) { /* invalid token, proceed as anonymous */ }
+        }
         const now = new Date().toISOString();
         // 1. Cari by puter_user_id atau by email (sebagai fallback link)
-        let user = await (0, knex_1.default)('users').where({ puter_user_id }).first();
-        if (!user && puter_email) {
-            // Pastikan email puter tidak menabrak email user lain yang sudah ada
-            user = await (0, knex_1.default)('users').whereRaw('LOWER(email) = ?', [puter_email.toLowerCase()]).first();
+        let linkedUser = await (0, knex_1.default)('users').where({ puter_user_id }).first();
+        if (!linkedUser && puter_email) {
+            linkedUser = await (0, knex_1.default)('users').whereRaw('LOWER(email) = ?', [puter_email.toLowerCase()]).first();
         }
-        if (user) {
+        // ─── Skenario A: User sudah login (Linking) ───
+        if (currentUser) {
+            // Jika Puter ini sudah punya pemilik lain
+            if (linkedUser && linkedUser.id !== currentUser.id) {
+                if (isGhostUser(linkedUser)) {
+                    console.log(`🧹 [login-puter] Cleaning up ghost ${linkedUser.id} to link with real user ${currentUser.id}`);
+                    await (0, knex_1.default)('users').where({ id: linkedUser.id }).delete();
+                }
+                else {
+                    res.status(409).json({ success: false, error: 'Akun Puter ini sudah terhubung ke akun AgriHub lain.' });
+                    return;
+                }
+            }
+            // Update user sekarang dengan metadata Puter
+            const updates = { puter_token, puter_user_id, updated_at: now };
+            if (puter_email && !currentUser.email)
+                updates.email = puter_email.toLowerCase();
+            await (0, knex_1.default)('users').where({ id: currentUser.id }).update(updates);
+            const fresh = await (0, knex_1.default)('users').where({ id: currentUser.id }).first();
+            res.json({ success: true, data: { user: safeUser(fresh), linked: true } });
+            return;
+        }
+        // ─── Skenario B: Anonymous login/register ───
+        if (linkedUser) {
             // 🚀 AUTO-SYNC & AUTO-MERGE LOGIC
-            // Jika user yang ditemukan ternyata adalah akun "GHOST" (hp placeholder) 
-            // TAPI ada akun asli (hp beneran) dengan email yang sama, kita harus bersihkan ghost tersebut.
-            if (user.phone.startsWith('PUTER_') && puter_email) {
+            if (isGhostUser(linkedUser) && puter_email) {
                 const realUser = await (0, knex_1.default)('users')
                     .whereRaw('LOWER(email) = ?', [puter_email.toLowerCase()])
                     .whereNot('phone', 'like', 'PUTER_%')
                     .first();
-                if (realUser && realUser.id !== user.id) {
-                    console.log(`🧹 [login-puter] Merging ghost ${user.id} into real user ${realUser.id}`);
-                    // Pindahkan puter_id ke realUser jika belum ada
-                    await (0, knex_1.default)('users').where({ id: realUser.id }).update({
-                        puter_user_id: puter_user_id,
-                        puter_token: puter_token,
-                        updated_at: now
-                    });
-                    // Hapus ghost
-                    await (0, knex_1.default)('users').where({ id: user.id }).delete();
-                    user = realUser;
+                if (realUser && realUser.id !== linkedUser.id) {
+                    console.log(`🧹 [login-puter] Merging ghost ${linkedUser.id} into real user ${realUser.id}`);
+                    await (0, knex_1.default)('users').where({ id: realUser.id }).update({ puter_user_id, puter_token, updated_at: now });
+                    await (0, knex_1.default)('users').where({ id: linkedUser.id }).delete();
+                    linkedUser = realUser;
                 }
             }
             // Sync data profil terbaru dari Puter
             const updates = { puter_token, puter_user_id, updated_at: now };
-            if (puter_name)
+            if (puter_name && !linkedUser.name)
                 updates.name = puter_name;
-            if (avatar_url)
+            if (avatar_url && !linkedUser.avatar_url)
                 updates.avatar_url = avatar_url;
-            if (puter_email)
-                updates.puter_email = puter_email.toLowerCase();
-            await (0, knex_1.default)('users').where({ id: user.id }).update(updates);
-            const fresh = await (0, knex_1.default)('users').where({ id: user.id }).first();
+            await (0, knex_1.default)('users').where({ id: linkedUser.id }).update(updates);
+            const fresh = await (0, knex_1.default)('users').where({ id: linkedUser.id }).first();
             res.json({
                 success: true,
                 data: {
                     user: safeUser(fresh),
-                    token: signToken(user.id),
-                    needs_phone: !user.phone || user.phone.startsWith('PUTER_'),
-                    needs_email_verify: !user.email_verified && !!user.email,
-                    needs_password: !user.password_hash
+                    token: signToken(linkedUser.id),
+                    needs_phone: !linkedUser.phone || isGhostUser(linkedUser),
+                    needs_email_verify: !linkedUser.email_verified && !!linkedUser.email,
+                    needs_password: !linkedUser.password_hash
                 }
             });
         }
@@ -534,6 +558,106 @@ router.patch('/link-whatsapp', auth_1.requireAuth, async (req, res) => {
         res.status(500).json({ success: false, error: 'Gagal tautkan WhatsApp' });
     }
 });
+// ─── Profile Management ───────────────────────────────────────────────────────
+// PATCH /api/auth/profile
+// Update non-sensitif (nama, username, avatar)
+router.patch('/profile', auth_1.requireAuth, async (req, res) => {
+    try {
+        const { name, username, avatar_url } = req.body;
+        const updates = { updated_at: new Date().toISOString() };
+        if (name)
+            updates.name = name;
+        if (avatar_url)
+            updates.avatar_url = avatar_url;
+        if (username) {
+            if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) {
+                res.status(400).json({ success: false, error: 'Format username tidak valid' });
+                return;
+            }
+            const exists = await (0, knex_1.default)('users').whereRaw('LOWER(username) = ?', [username.toLowerCase()]).whereNot({ id: req.user.id }).first();
+            if (exists) {
+                res.status(409).json({ success: false, error: 'Username sudah digunakan' });
+                return;
+            }
+            updates.username = username.toLowerCase();
+        }
+        await (0, knex_1.default)('users').where({ id: req.user.id }).update(updates);
+        const user = await (0, knex_1.default)('users').where({ id: req.user.id }).first();
+        res.json({ success: true, message: 'Profil berhasil diperbarui', data: { user: safeUser(user) } });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Gagal update profil' });
+    }
+});
+// POST /api/auth/request-profile-otp
+// Request OTP untuk ganti nomor/email (kirim ke TUJUAN BARU)
+router.post('/request-profile-otp', auth_1.requireAuth, async (req, res) => {
+    try {
+        const { type, value } = req.body;
+        if (!type || !value) {
+            res.status(400).json({ success: false, error: 'Tipe dan nilai baru wajib diisi' });
+            return;
+        }
+        const isEmail = type === 'email';
+        const normalized = isEmail ? value.toLowerCase() : value.replace(/[^0-9]/g, '');
+        // Cek apakah sudah digunakan orang lain
+        const existing = await (0, knex_1.default)('users').where(isEmail ? 'email' : 'phone', 'like', `%${normalized.slice(-9)}%`).whereNot({ id: req.user.id }).first();
+        if (existing) {
+            res.status(409).json({ success: false, error: `${isEmail ? 'Email' : 'Nomor HP'} sudah digunakan akun lain.` });
+            return;
+        }
+        const otp = generateOTP();
+        const expires = otpExpiry();
+        // Simpan OTP sementara (reusing existing OTP columns for profile update context)
+        const updates = { phone_otp: otp, phone_otp_expires: expires };
+        await (0, knex_1.default)('users').where({ id: req.user.id }).update(updates);
+        if (isEmail) {
+            await (0, emailService_1.sendVerificationEmail)(normalized, otp, req.user.name);
+        }
+        else {
+            await whatsappBot_1.sendWAMessage(normalized, `🌾 *AgriHub* — Kode OTP untuk perubahan nomor WhatsApp Anda:\n\n*${otp}*\n\n_Rahasiakan kode ini. Berlaku 10 menit._`);
+        }
+        res.json({ success: true, message: 'OTP terkirim ke alamat baru' });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Gagal mengirim OTP' });
+    }
+});
+// POST /api/auth/verify-profile-otp
+// Verifikasi OTP dan eksekusi pergantian data
+router.post('/verify-profile-otp', auth_1.requireAuth, async (req, res) => {
+    try {
+        const { type, value, otp } = req.body;
+        const user = await (0, knex_1.default)('users').where({ id: req.user.id }).first();
+        if (!user || user.phone_otp !== otp?.toString()) {
+            res.status(400).json({ success: false, error: 'OTP tidak valid' });
+            return;
+        }
+        if (new Date(user.phone_otp_expires) < new Date()) {
+            res.status(400).json({ success: false, error: 'OTP sudah kadaluarsa' });
+            return;
+        }
+        const updates = {
+            phone_otp: null,
+            phone_otp_expires: null,
+            updated_at: new Date().toISOString()
+        };
+        if (type === 'email') {
+            updates.email = value.toLowerCase();
+            updates.email_verified = true;
+        }
+        else {
+            updates.phone = value.replace(/[^0-9]/g, '');
+            updates.phone_verified = true;
+        }
+        await (0, knex_1.default)('users').where({ id: req.user.id }).update(updates);
+        const fresh = await (0, knex_1.default)('users').where({ id: req.user.id }).first();
+        res.json({ success: true, message: 'Data berhasil diverifikasi dan diubah', data: { user: safeUser(fresh) } });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: 'Gagal verifikasi profil' });
+    }
+});
 // ─── GET /api/auth/check-phone/:phone ────────────────────────────────────────
 router.get('/check-phone/:phone', async (req, res) => {
     try {
@@ -608,6 +732,12 @@ router.post('/wa-magic-session', async (req, res) => {
         res.status(500).json({ success: false, error: 'Gagal membuat session' });
     }
 });
+const isValidPhone = (p) => {
+    if (!p)
+        return false;
+    const digits = p.replace(/[^0-9]/g, '');
+    return digits.length >= 7 && digits.length <= 13;
+};
 router.get('/wa-magic-session/:sessionId', async (req, res) => {
     try {
         const session = await (0, knex_1.default)('wa_magic_sessions').where({ id: req.params.sessionId }).first();
@@ -620,11 +750,17 @@ router.get('/wa-magic-session/:sessionId', async (req, res) => {
             return;
         }
         let userName = null;
+        let phone = session.phone;
         if (session.user_id) {
-            const u = await (0, knex_1.default)('users').where({ id: session.user_id }).select('name').first();
+            const u = await (0, knex_1.default)('users').where({ id: session.user_id }).select('name', 'phone').first();
             userName = u?.name || null;
+            if (u?.phone)
+                phone = u.phone;
         }
-        res.json({ success: true, data: { purpose: session.purpose, phone: session.phone, lid: session.lid, userName } });
+        // Safety: if phone looks like an LID, don't return it as a phone number
+        if (phone && !isValidPhone(phone))
+            phone = null;
+        res.json({ success: true, data: { purpose: session.purpose, phone, lid: session.lid, userName } });
     }
     catch {
         res.status(500).json({ success: false, error: 'Gagal mengambil session' });
@@ -640,7 +776,7 @@ router.post('/wa-magic-session/:sessionId/complete', async (req, res) => {
             res.status(404).json({ success: false, error: 'Session tidak valid atau sudah selesai' });
             return;
         }
-        const { puter_token, puter_user_id, puter_name, puter_email } = req.body;
+        const { puter_token, puter_user_id, puter_name, puter_email, phone: providedPhone } = req.body;
         if (!puter_token) {
             res.status(400).json({ success: false, error: 'puter_token wajib diisi' });
             return;
@@ -648,28 +784,31 @@ router.post('/wa-magic-session/:sessionId/complete', async (req, res) => {
         const now = new Date().toISOString();
         let userId = session.user_id;
         let isNew = false;
-        if (session.purpose === 'full-setup') {
-            if (!session.phone) {
-                res.status(400).json({ success: false, error: 'Nomor HP tidak terdeteksi' });
+        if (session.purpose === 'full-setup' || session.purpose === 'relink') {
+            const sessionPhone = session.phone || providedPhone;
+            if (!sessionPhone || !isValidPhone(sessionPhone)) {
+                res.status(400).json({ success: false, error: 'Nomor HP tidak terdeteksi atau tidak valid. Silakan masukkan nomor HP Anda.' });
                 return;
             }
-            const existing = await (0, knex_1.default)('users').where('phone', 'like', `%${session.phone.slice(-9)}%`).first();
+            const existing = await (0, knex_1.default)('users').where('phone', 'like', `%${sessionPhone.slice(-9)}%`).first();
             if (existing) {
                 userId = existing.id;
+                // 🚀 Auto-link Puter if not already linked
+                if (puter_token && !existing.puter_token) {
+                    await (0, knex_1.default)('users').where({ id: userId }).update({ puter_token, puter_user_id, updated_at: now });
+                }
             }
             else {
                 isNew = true;
                 userId = (0, uuid_1.v4)();
                 await (0, knex_1.default)('users').insert({
                     id: userId,
-                    phone: session.phone,
-                    name: puter_name || `User_${session.phone.slice(-4)}`,
+                    phone: sessionPhone,
+                    name: puter_name || `User_${sessionPhone.slice(-4)}`,
                     email: puter_email?.toLowerCase() || null,
                     email_verified: !!puter_email,
                     role: 'konsumen',
-                    // Phone proven via WA bot delivery → auto-verified, no OTP needed
-                    is_verified: true,
-                    phone_verified: true,
+                    is_verified: true, phone_verified: true,
                     puter_user_id: puter_user_id || null,
                     puter_token,
                     whatsapp_lid: session.lid || null,
@@ -688,7 +827,7 @@ router.post('/wa-magic-session/:sessionId/complete', async (req, res) => {
         }
         if (session.lid)
             updates.whatsapp_lid = session.lid;
-        if (session.phone)
+        if (session.phone && isValidPhone(session.phone))
             updates.phone = session.phone;
         await (0, knex_1.default)('users').where({ id: userId }).update(updates);
         // Invalidate session
