@@ -1028,6 +1028,29 @@ async function handleMessage(msg: proto.IWebMessageInfo): Promise<void> {
         return;
       }
 
+      if (cleanUpper === 'LIHAT MATCH') {
+        const currentUser = await db('users').where({ whatsapp_lid: sender }).first() || await db('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+        if (!currentUser) {
+          await sendWAMessage(jid, '❌ Akun tidak ditemukan.');
+          return;
+        }
+
+        const matches = await matchingService.getMatchesForUser(currentUser.id);
+        if (matches.length === 0) {
+          await sendWAMessage(jid, 'ℹ️ Belum ada kecocokan (match) baru untuk stok atau permintaan Anda.');
+          return;
+        }
+
+        let matchText = '🤝 *Kecocokan (Match) Terbaru:*\n\n';
+        for (const m of matches) {
+          matchText += `• *${m.komoditas}* (${m.score}% Cocok)\n`;
+          matchText += `  💰 Harga: Rp${m.supply_price.toLocaleString('id-ID')} vs Rp${m.demand_price.toLocaleString('id-ID')}\n`;
+          matchText += `  📍 Lokasi: ${m.supply_loc} ↔️ ${m.demand_loc}\n\n`;
+        }
+        await sendWAMessage(jid, matchText);
+        return;
+      }
+
       if (cleanUpper.startsWith('KIRIM ')) {
           const parts = cleanText.slice(6).trim().split('|').map(s => s.trim());
           if (parts.length < 3) { 

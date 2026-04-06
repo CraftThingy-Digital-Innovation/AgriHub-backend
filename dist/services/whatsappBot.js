@@ -47,6 +47,7 @@ const knex_1 = __importDefault(require("../config/knex"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const aiService_1 = require("./aiService");
 const biteshipService_1 = require("./biteshipService");
+const matchingService = __importStar(require("./matchingService"));
 const transactionService = __importStar(require("./transactionService"));
 const uuid_1 = require("uuid");
 const puter_js_1 = __importDefault(require("@heyputer/puter.js"));
@@ -974,6 +975,26 @@ async function handleMessage(msg) {
             }
             if (cleanUpper.startsWith('CARI STOK')) {
                 await sendWAMessage(jid, 'ℹ️ Fitur permintaan barang kini ditingkatkan menjadi **Wishlist** pintar yang terhubung langsung dengan Alamat Pengiriman Anda secara otomatis.\n\nSilakan kunjungi *Menu Wishlist* di Dashboard Web AgriHub (https://agrihub.rumah-genbi.com) untuk menambahkan produk yang Anda butuhkan. Kami akan otomatis memberi tahu Anda di WA ketika ada stok yang cocok dan murah! 🥳');
+                return;
+            }
+            if (cleanUpper === 'LIHAT MATCH') {
+                const currentUser = await (0, knex_1.default)('users').where({ whatsapp_lid: sender }).first() || await (0, knex_1.default)('users').where('phone', 'like', `%${sender.split('@')[0].slice(-9)}%`).first();
+                if (!currentUser) {
+                    await sendWAMessage(jid, '❌ Akun tidak ditemukan.');
+                    return;
+                }
+                const matches = await matchingService.getMatchesForUser(currentUser.id);
+                if (matches.length === 0) {
+                    await sendWAMessage(jid, 'ℹ️ Belum ada kecocokan (match) baru untuk stok atau permintaan Anda.');
+                    return;
+                }
+                let matchText = '🤝 *Kecocokan (Match) Terbaru:*\n\n';
+                for (const m of matches) {
+                    matchText += `• *${m.komoditas}* (${m.score}% Cocok)\n`;
+                    matchText += `  💰 Harga: Rp${m.supply_price.toLocaleString('id-ID')} vs Rp${m.demand_price.toLocaleString('id-ID')}\n`;
+                    matchText += `  📍 Lokasi: ${m.supply_loc} ↔️ ${m.demand_loc}\n\n`;
+                }
+                await sendWAMessage(jid, matchText);
                 return;
             }
             if (cleanUpper.startsWith('KIRIM ')) {
