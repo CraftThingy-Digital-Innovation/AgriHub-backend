@@ -188,13 +188,14 @@ router.post('/login', async (req, res) => {
             return;
         }
         console.log(`[Login] ${field} '${value}' SUCCESS.`);
+        const isAdmin = user.role === 'admin';
         res.json({
             success: true,
             data: {
                 user: safeUser(user),
                 token: signToken(user.id),
-                needs_phone_verify: !user.phone_verified,
-                needs_email_verify: !!user.email && !user.email_verified
+                needs_phone_verify: !isAdmin && !user.phone_verified,
+                needs_email_verify: !isAdmin && (!!user.email && !user.email_verified)
             }
         });
     }
@@ -274,13 +275,14 @@ router.post('/login-puter', async (req, res) => {
                 updates.avatar_url = avatar_url;
             await (0, knex_1.default)('users').where({ id: linkedUser.id }).update(updates);
             const fresh = await (0, knex_1.default)('users').where({ id: linkedUser.id }).first();
+            const isAdmin = fresh.role === 'admin';
             res.json({
                 success: true,
                 data: {
                     user: safeUser(fresh),
                     token: signToken(linkedUser.id),
-                    needs_phone: !linkedUser.phone || isGhostUser(linkedUser),
-                    needs_email_verify: !linkedUser.email_verified && !!linkedUser.email,
+                    needs_phone: !isAdmin && (!linkedUser.phone || isGhostUser(linkedUser)),
+                    needs_email_verify: !isAdmin && (!linkedUser.email_verified && !!linkedUser.email),
                     needs_password: !linkedUser.password_hash
                 }
             });

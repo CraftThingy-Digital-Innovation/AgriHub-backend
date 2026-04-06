@@ -146,13 +146,14 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     }
 
     console.log(`[Login] ${field} '${value}' SUCCESS.`);
+    const isAdmin = user.role === 'admin';
     res.json({ 
       success: true, 
       data: { 
         user: safeUser(user), 
         token: signToken(user.id),
-        needs_phone_verify: !user.phone_verified,
-        needs_email_verify: !!user.email && !user.email_verified
+        needs_phone_verify: !isAdmin && !user.phone_verified,
+        needs_email_verify: !isAdmin && (!!user.email && !user.email_verified)
       } 
     });
   } catch (err) {
@@ -237,13 +238,14 @@ router.post('/login-puter', async (req: Request, res: Response): Promise<void> =
       await db('users').where({ id: linkedUser.id }).update(updates);
       const fresh = await db('users').where({ id: linkedUser.id }).first();
       
+      const isAdmin = fresh.role === 'admin';
       res.json({ 
         success: true, 
         data: { 
           user: safeUser(fresh), 
           token: signToken(linkedUser.id), 
-          needs_phone: !linkedUser.phone || isGhostUser(linkedUser),
-          needs_email_verify: !linkedUser.email_verified && !!linkedUser.email,
+          needs_phone: !isAdmin && (!linkedUser.phone || isGhostUser(linkedUser)),
+          needs_email_verify: !isAdmin && (!linkedUser.email_verified && !!linkedUser.email),
           needs_password: !linkedUser.password_hash 
         } 
       });
