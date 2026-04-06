@@ -1484,13 +1484,25 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
          }
       }
 
-      const aiReply = await chatWithAI({
-        message: cleanText || text || 'Halo!',
-        history: [],
-        userId: targetUserId,
-        whatsappJid: jid,
-        useRag: true,
-        imageUrl,
+       // Ambil detail user untuk konteks AI (Identity Injection)
+       const userForContext = await db('users').where({ id: targetUserId }).first();
+       const storeForContext = userForContext ? await db('stores').where({ owner_id: userForContext.id }).first() : null;
+       const walletForContext = userForContext?.id ? await db('wallets').where({ user_id: userForContext.id }).first() : null;
+
+       const aiReply = await chatWithAI({
+         message: cleanText || text || 'Halo!',
+         history: [],
+         userId: targetUserId,
+         whatsappJid: jid,
+         useRag: true,
+         imageUrl,
+         userMetadata: {
+             name: userForContext?.name,
+             phone: userForContext?.phone,
+             role: userForContext?.role,
+             storeName: storeForContext?.name,
+             walletBalance: walletForContext?.balance
+         },
         onPhaseChange: async (phase: string) => {
             phaseText = phase;
             // Langsung update status fase ke pesan inisial jika koneksi aman

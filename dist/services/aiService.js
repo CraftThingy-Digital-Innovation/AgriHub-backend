@@ -73,7 +73,7 @@ const SYSTEM_PROMPT = `Kamu adalah AsistenTani, AI konsultan pertanian AgriHub I
   Gaya bicaramu: Gunakan Bahasa Indonesia yang ramah, ringkas, mudah dipahami masyarakat, pedangan, dan petani. Konfirmasikan aksi yang akan kamu lakukan sebelum menyertakan tag [EXEC].`;
 // ─── Main chat function ────────────────────────────────────────────────────
 async function chatWithAI(opts) {
-    let { message, history: providedHistory, userId, whatsappJid, useRag = true, model = exports.AI_MODELS.default, imageUrl, onChunk, onPhaseChange } = opts;
+    let { message, history: providedHistory, userId, whatsappJid, useRag = true, model = exports.AI_MODELS.default, imageUrl, onChunk, onPhaseChange, userMetadata } = opts;
     let ragContext = '';
     const ragSources = [];
     // Ambil token puter user dari DB (dibutuhkan untuk stage 1 vision)
@@ -168,6 +168,7 @@ async function chatWithAI(opts) {
         }
     }
     const systemMsg = SYSTEM_PROMPT +
+        (userMetadata ? `\n\n=== IDENTITAS USER (SANGAT PENTING) ===\nNama: ${userMetadata.name || 'User'}\nPhone: ${userMetadata.phone || 'N/A'}\nRole: ${userMetadata.role || 'user'}${userMetadata.storeName ? `\nToko: ${userMetadata.storeName}` : ''}${userMetadata.walletBalance !== undefined ? `\nSaldo Dompet: Rp${userMetadata.walletBalance.toLocaleString('id-ID')}` : ''}\n(Gunakan identitas ini untuk menyapa user secara personal)\n` : '') +
         (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
         (priceContext ? `\n\n=== DATA TERBARU DARI PIHPS NASIONAL (BANK INDONESIA) ===\n${priceContext}\n` : '') +
         creditContext +

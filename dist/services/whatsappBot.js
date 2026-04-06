@@ -1403,6 +1403,10 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
                     console.error('Failed to download WA media:', e);
                 }
             }
+            // Ambil detail user untuk konteks AI (Identity Injection)
+            const userForContext = await (0, knex_1.default)('users').where({ id: targetUserId }).first();
+            const storeForContext = userForContext ? await (0, knex_1.default)('stores').where({ owner_id: userForContext.id }).first() : null;
+            const walletForContext = userForContext?.id ? await (0, knex_1.default)('wallets').where({ user_id: userForContext.id }).first() : null;
             const aiReply = await (0, aiService_1.chatWithAI)({
                 message: cleanText || text || 'Halo!',
                 history: [],
@@ -1410,6 +1414,13 @@ Atau langsung tanya soal pertanian ke AI! 🚜🌿`;
                 whatsappJid: jid,
                 useRag: true,
                 imageUrl,
+                userMetadata: {
+                    name: userForContext?.name,
+                    phone: userForContext?.phone,
+                    role: userForContext?.role,
+                    storeName: storeForContext?.name,
+                    walletBalance: walletForContext?.balance
+                },
                 onPhaseChange: async (phase) => {
                     phaseText = phase;
                     // Langsung update status fase ke pesan inisial jika koneksi aman

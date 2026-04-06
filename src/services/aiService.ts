@@ -83,8 +83,15 @@ export async function chatWithAI(opts: {
   imageUrl?: string;
   onChunk?: (chunk: string) => void;
   onPhaseChange?: (phase: string) => void;
+  userMetadata?: {
+    name?: string;
+    phone?: string;
+    role?: string;
+    storeName?: string;
+    walletBalance?: number;
+  };
 }): Promise<{ reply: string; ragSources: string[]; tokensUsed?: number }> {
-  let { message, history: providedHistory, userId, whatsappJid, useRag = true, model = AI_MODELS.default, imageUrl, onChunk, onPhaseChange } = opts;
+  let { message, history: providedHistory, userId, whatsappJid, useRag = true, model = AI_MODELS.default, imageUrl, onChunk, onPhaseChange, userMetadata } = opts;
 
   let ragContext = '';
   const ragSources: string[] = [];
@@ -190,6 +197,7 @@ export async function chatWithAI(opts: {
 
 
   const systemMsg = SYSTEM_PROMPT + 
+    (userMetadata ? `\n\n=== IDENTITAS USER (SANGAT PENTING) ===\nNama: ${userMetadata.name || 'User'}\nPhone: ${userMetadata.phone || 'N/A'}\nRole: ${userMetadata.role || 'user'}${userMetadata.storeName ? `\nToko: ${userMetadata.storeName}` : ''}${userMetadata.walletBalance !== undefined ? `\nSaldo Dompet: Rp${userMetadata.walletBalance.toLocaleString('id-ID')}` : ''}\n(Gunakan identitas ini untuk menyapa user secara personal)\n` : '') +
     (contextSummary ? `\n\n=== RINGKASAN PERCAKAPAN SEBELUMNYA ===\n${contextSummary}\n` : '') +
     (priceContext ? `\n\n=== DATA TERBARU DARI PIHPS NASIONAL (BANK INDONESIA) ===\n${priceContext}\n` : '') +
     creditContext +
